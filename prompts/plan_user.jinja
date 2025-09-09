@@ -5,6 +5,6 @@ Constraints:
 {{ constraints | default("Keep it simple and low-cost.") }}
 
 Notes:
-- Prefer 2–5 concrete, testable steps for the 'do' prompt.
-- Keep all prompts short and specific.
-- The plan must use the simple loop structure: do until DONE, then finish.
+- Prefer 2–5 concrete, testable steps tailored to the goal.
+- Avoid unnecessary branching; keep the loop simple (continue until DONE, then finish).
+- Keep prompts short and specific.

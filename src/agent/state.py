@@ -1,12 +1,11 @@
-from typing import Any, Dict, List, Literal, TypedDict, Optional
+from __future__ import annotations
+from typing import Any, Dict, List, Literal, TypedDict
 
 class ChatMessage(TypedDict, total=False):
-    """A chat message."""
-    role: Literal["human", "user", "assistant", "system", "tool"]
+    role: Literal["human","user","assistant","system","tool"]
     content: str
 
 class AppState(TypedDict, total=False):
-    """The full state of the application graph."""
     messages: List[ChatMessage]
     plan: Dict[str, Any]
     flags: Dict[str, bool]

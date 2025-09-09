@@ -1,80 +1,79 @@
-from typing import Dict, Any, Tuple
-from prompt2graph.config.settings import settings
-from .planner import Plan
+from __future__ import annotations
+from typing import Any, Dict
+from config.settings import get_settings
 
-def _score_structure(plan: Plan) -> float:
-    """
-    Scores the plan's structural integrity based on MVP requirements.
-    Returns 1.0 if the basic 3-node loop structure is present, 0.0 otherwise.
-    """
-    try:
-        expected_nodes = {"plan", "do", "finish"}
-        actual_nodes = {node.id for node in plan.nodes}
-        if expected_nodes != actual_nodes:
-            return 0.0
+def _structural_score(plan: Dict[str, Any]) -> float:
+    nodes = plan.get("nodes", []) or []
+    edges = plan.get("edges", []) or []
+    steps = len(nodes)
+    out_counts: Dict[str, int] = {}
+    for e in edges:
+        src = e.get("from") or e.get("from_")
+        if not src: continue
+        out_counts[src] = out_counts.get(src, 0) + 1
+    branches = sum(1 for _, c in out_counts.items() if c > 1)
+    score = 0.9
+    score -= max(0, steps - 4) * 0.05
+    score -= branches * 0.10
+    return float(max(0.0, min(1.0, score)))
 
-        # Check for the essential edges that form the loop
-        edges = {(edge.from_, edge.to) for edge in plan.edges}
-        if not {("plan", "do"), ("do", "do"), ("do", "finish")}.issubset(edges):
-            return 0.0
+def _tool_coverage_score(user_text: str, plan: Dict[str, Any]) -> float:
+    text = (user_text or "").lower()
+    implies = {
+        "web": any(k in text for k in ["search","browse","web","google","crawl"]),
+        "git": any(k in text for k in ["git","branch","commit","pr"]),
+        "test": any(k in text for k in ["test","pytest","unit test","ci","coverage"]),
+        "file": any(k in text for k in ["read file","write file","patch","edit file","apply patch"]),
+    }
+    present = {"web": False, "git": False, "test": False, "file": False}
+    for n in plan.get("nodes", []) or []:
+        tool = (n.get("tool") or "").lower()
+        if any(k in tool for k in ["web","search","browser","http"]): present["web"] = True
+        if "git" in tool: present["git"] = True
+        if any(k in tool for k in ["pytest","test","runner","ci"]): present["test"] = True
+        if any(k in tool for k in ["file","fs.","apply_patch","write","read"]): present["file"] = True
+    needed = [k for k, v in implies.items() if v]
+    if not needed: return 1.0
+    covered = sum(1 for k in needed if present.get(k, False))
+    return covered / max(1, len(needed))
 
-        # Check that prompts are not empty
-        if any(not node.prompt for node in plan.nodes):
-            return 0.0
+def _prior_success_score(metrics: Dict[str, Any]) -> float:
+    succ = int(metrics.get("prior_successes", 0))
+    att = int(metrics.get("prior_attempts", 0))
+    return (succ + 1) / (att + 2)
 
-    except (AttributeError, TypeError):
-        return 0.0
+def compute_plan_confidence(state: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = get_settings()
+    plan = dict(state.get("plan") or {})
+    user_text = (state.get("messages") or [{}])[-1].get("content", "") if state.get("messages") else ""
+    metrics = dict(state.get("metrics") or {})
 
-    return 1.0
+    self_score = float(plan.get("confidence", 0.0) or 0.0)
+    structural = _structural_score(plan)
+    coverage = _tool_coverage_score(user_text, plan)
+    prior = _prior_success_score(metrics)
 
-def _score_tool_coverage(plan: Plan) -> float:
-    """
-    Scores tool coverage. This is a placeholder for future implementation
-    and will always return 0.0 in the MVP since no tools are used.
-    """
-    return 0.0
+    w_self = float(getattr(cfg, "conf_w_self", 0.4))
+    w_struct = float(getattr(cfg, "conf_w_struct", 0.25))
+    w_cov = float(getattr(cfg, "conf_w_cov", 0.2))
+    w_prior = float(getattr(cfg, "conf_w_prior", 0.15))
+    w_sum = max(1e-9, w_self + w_struct + w_cov + w_prior)
+    w_self, w_struct, w_cov, w_prior = (w_self / w_sum, w_struct / w_sum, w_cov / w_sum, w_prior / w_sum)
 
-def _score_prior_success(metrics: Dict[str, Any]) -> float:
-    """
-    Scores based on the historical success rate of the agent.
-    Defaults to 0.5 if no history is available.
-    """
-    attempts = metrics.get("prior_attempts", 0)
-    successes = metrics.get("prior_successes", 0)
-    if attempts == 0:
-        return 0.5  # Default confidence if no history
-    return successes / attempts
+    confidence = w_self*self_score + w_struct*structural + w_cov*coverage + w_prior*prior
+    confidence = float(max(0.0, min(1.0, confidence)))
 
-def compute_plan_confidence(plan: Plan, state: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
-    """
-    Computes a blended confidence score for a given plan and returns the
-    final score along with the debug terms used in the calculation.
-    """
-    w = settings.confidence_weights
-
-    self_score = plan.confidence if plan.confidence is not None else 0.5
-    struct_score = _score_structure(plan)
-    cov_score = _score_tool_coverage(plan)
-    prior_score = _score_prior_success(state.get("metrics", {}))
-
-    # Blend the scores using weights from settings
-    blended_confidence = (
-        self_score * w.conf_w_self +
-        struct_score * w.conf_w_struct +
-        cov_score * w.conf_w_cov +
-        prior_score * w.conf_w_prior
-    )
-
-    # Clamp the final score between 0.0 and 1.0
-    final_confidence = min(max(blended_confidence, 0.0), 1.0)
-
-    confidence_terms = {
-        "self_score": self_score,
-        "structural": struct_score,
-        "coverage": cov_score,
-        "prior": prior_score,
-        "final": final_confidence,
-        "weights": w.model_dump()
+    debug = dict(state.get("debug") or {})
+    debug["confidence_terms"] = {
+        "self": round(self_score, 3),
+        "structural": round(structural, 3),
+        "coverage": round(coverage, 3),
+        "prior": round(prior, 3),
+        "weights": {"self": round(w_self,3), "struct": round(w_struct,3), "cov": round(w_cov,3), "prior": round(w_prior,3)},
+        "final": round(confidence, 3),
     }
 
-    return final_confidence, confidence_terms
+    plan["confidence"] = confidence
+    state["plan"] = plan
+    state["debug"] = debug
+    return state
