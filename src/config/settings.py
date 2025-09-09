@@ -1,45 +1,34 @@
-from pydantic import Field, BaseModel
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-class ConfidenceWeights(BaseModel):
-    """Weights for blending confidence scores."""
-    conf_w_self: float = 0.4
-    conf_w_struct: float = 0.25
-    conf_w_cov: float = 0.2
-    conf_w_prior: float = 0.15
+from __future__ import annotations
+from functools import lru_cache
+from pydantic import BaseSettings, Field
 
 class Settings(BaseSettings):
-    """
-    Application settings loaded from .env file and environment variables.
-    """
-    model_config = SettingsConfigDict(
-        env_file='.env',
-        env_file_encoding='utf-8',
-        extra='ignore'
-    )
+    # LLM
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+    openai_base_url: str | None = Field(default=None, env="OPENAI_BASE_URL")
+    model: str = Field(default="gpt-4o-mini", env="MODEL")
+    temperature: float = Field(default=0.0, env="TEMPERATURE")
 
-    # LLM Settings from .env
-    openai_base_url: str = Field(default="http://localhost:11434/v1", alias="OPENAI_BASE_URL")
-    openai_api_key: str = Field(default="NA", alias="OPENAI_API_KEY")
-    model: str = Field(default="qwen2.5:7b-instruct", alias="MODEL")
-    temperature: float = Field(default=0.0, alias="TEMPERATURE")
+    # Executor
+    exec_max_iters: int = Field(default=6, env="EXEC_MAX_ITERS")
+    reflexion: bool = Field(default=True, env="REFLEXION")
+    reflexion_max_retries: int = Field(default=1, env="REFLEXION_MAX_RETRIES")
 
-    # Planning / ToT Settings from .env
-    tot_gate: bool = Field(default=True, alias="TOT_GATE")
-    tot_branches: int = Field(default=3, alias="TOT_BRANCHES")
-    planner_confidence_threshold: float = Field(default=0.6, alias="PLANNER_CONFIDENCE_THRESHOLD")
+    # ToT / planning
+    tot_gate: bool = Field(default=True, env="TOT_GATE")
+    tot_branches: int = Field(default=3, env="TOT_BRANCHES")
+    planner_confidence_threshold: float = Field(default=0.6, env="PLANNER_CONFIDENCE_THRESHOLD")
 
-    # Executor Settings from .env
-    exec_max_iters: int = Field(default=6, alias="EXEC_MAX_ITERS")
-    reflexion: bool = Field(default=True, alias="REFLEXION")
-    reflexion_max_retries: int = Field(default=1, alias="REFLEXION_MAX_RETRIES")
+    # Confidence weights
+    conf_w_self: float = Field(default=0.4, env="CONF_W_SELF")
+    conf_w_struct: float = Field(default=0.25, env="CONF_W_STRUCT")
+    conf_w_cov: float = Field(default=0.2, env="CONF_W_COV")
+    conf_w_prior: float = Field(default=0.15, env="CONF_W_PRIOR")
 
-    # HITL Settings from .env
-    require_plan_approval: bool = Field(default=True, alias="REQUIRE_PLAN_APPROVAL")
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
 
-    # Confidence Weights (not from .env, using defaults)
-    confidence_weights: ConfidenceWeights = Field(default_factory=ConfidenceWeights)
-
-
-# Single, shared instance of the settings
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

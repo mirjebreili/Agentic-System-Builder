@@ -1,150 +1,100 @@
-import json
-import logging
-from typing import Optional, List, Dict, Any
-
-from jinja2 import Environment, FileSystemLoader
-from langchain_core.messages import SystemMessage, HumanMessage
+from __future__ import annotations
+import json, re
+from pathlib import Path
+from typing import Any, Dict
 from pydantic import BaseModel, Field, ValidationError
-
-from prompt2graph.config.settings import settings
-from prompt2graph.llm.client import get_chat_model
-from .confidence import compute_plan_confidence
-from .state import AppState, ChatMessage
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- Schemas (already defined, but kept here for context) ---
+from langchain_core.messages import SystemMessage, HumanMessage
+from llm.client import get_chat_model
 
 class PlanNode(BaseModel):
     id: str
     type: str
-    prompt: Optional[str] = None
-    tool: Optional[str] = None
+    prompt: str | None = None
+    tool: str | None = None
 
 class PlanEdge(BaseModel):
     from_: str = Field(..., alias="from")
     to: str
-    if_: Optional[str] = Field(None, alias="if")
+    if_: str | None = Field(None, alias="if")
 
 class Plan(BaseModel):
     goal: str
-    nodes: List[PlanNode]
-    edges: List[PlanEdge]
-    confidence: Optional[float] = None
+    nodes: list[PlanNode]
+    edges: list[PlanEdge]
+    confidence: float | None = None
 
-# --- Prompt Rendering ---
+PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
+USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
-def _render_prompt(template_file: str, **kwargs) -> str:
-    """Renders a Jinja2 prompt template."""
-    env = Environment(loader=FileSystemLoader("prompt2graph/prompts/"))
-    template = env.get_template(template_file)
-    return template.render(**kwargs)
+def _render_user_prompt(goal: str, constraints: str | None = None) -> str:
+    txt = USER_TMPL.replace("{{ user_goal }}", goal)
+    txt = txt.replace('{{ constraints | default("Keep it simple and low-cost.") }}',
+                      constraints or "Keep it simple and low-cost.")
+    return txt
 
-# --- JSON Parsing with Repair ---
+_JSON_BLOCK = re.compile(r"```json\s*(.*?)```", re.S | re.I)
+def _extract_json(text: str) -> str:
+    m = _JSON_BLOCK.search(text or "")
+    return m.group(1) if m else (text or "")
 
-def _parse_and_validate_plan(llm_output: str, llm) -> Optional[Plan]:
-    """Parses LLM output into a Plan object, with one repair attempt."""
-    try:
-        # Basic cleanup
-        cleaned_output = llm_output.strip().removeprefix("```json").removesuffix("```")
-        plan_dict = json.loads(cleaned_output)
-        return Plan.model_validate(plan_dict)
-    except (json.JSONDecodeError, ValidationError) as e:
-        logging.warning(f"Initial plan validation failed: {e}. Attempting repair.")
-        repair_prompt = f"The following JSON is invalid. Please fix it and return only the valid JSON object.\n\nInvalid JSON:\n{llm_output}\n\nError:\n{e}"
-        repaired_output = llm.invoke([HumanMessage(content=repair_prompt)]).content
-        try:
-            cleaned_repaired_output = repaired_output.strip().removeprefix("```json").removesuffix("```")
-            repaired_dict = json.loads(cleaned_repaired_output)
-            return Plan.model_validate(repaired_dict)
-        except (json.JSONDecodeError, ValidationError) as e2:
-            logging.error(f"Plan repair failed: {e2}")
-            return None
-
-# --- Fallback Plan ---
-
-def _create_fallback_plan(goal: str) -> Plan:
-    """Creates a hardcoded, minimal fallback plan."""
-    logging.warning("All candidates failed validation. Creating a fallback plan.")
-    return Plan(
-        goal=f"Fallback plan for: {goal}",
-        nodes=[
-            PlanNode(id="plan", type="llm", prompt="Break down the user's goal into simple steps."),
-            PlanNode(id="do", type="llm", prompt="Execute the steps. Output 'DONE' when complete."),
-            PlanNode(id="finish", type="llm", prompt="Summarize the results.")
-        ],
-        edges=[
-            PlanEdge(from_="plan", to="do"),
-            PlanEdge(from_="do", to="do", if_="more_steps"),
-            PlanEdge(from_="do", to="finish", if_="steps_done")
-        ],
-        confidence=0.1
-    )
-
-# --- ToT Planner Node ---
-
-def plan_tot(state: AppState) -> AppState:
-    """
-    The main planner node using a simplified Tree-of-Thoughts (ToT) approach.
-    Generates K candidate plans, judges them, and selects the best one.
-    """
+def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
+    """ToT: generate K=3 plans, judge, pick best; attach confidence."""
     llm = get_chat_model()
-    user_goal = state["messages"][-1]["content"]
+    user_goal = (state.get("messages") or [{}])[-1].get("content", "Plan a tiny workflow.")
+    K = 3
 
-    # 1. Generate K candidate plans
-    plan_system_prompt = _render_prompt("plan_system.jinja")
-    plan_user_prompt = _render_prompt("plan_user.jinja", user_goal=user_goal)
+    sys = SystemMessage(SYSTEM_PROMPT + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
+    user = HumanMessage(_render_user_prompt(user_goal))
+    resp = llm.invoke([sys, user]).content
 
-    logging.info(f"Generating {settings.tot_branches} plan candidates for goal: '{user_goal}'")
-    candidate_futures = [
-        llm.ainvoke([SystemMessage(content=plan_system_prompt), HumanMessage(content=plan_user_prompt)])
-        for _ in range(settings.tot_branches)
-    ]
+    # Parse / repair
+    try:
+        cand = json.loads(_extract_json(resp))
+    except Exception:
+        fix = llm.invoke([SystemMessage("Output ONLY a JSON array of plan objects."), HumanMessage(resp)]).content
+        cand = json.loads(_extract_json(fix))
+    if isinstance(cand, dict) and "alternatives" in cand:
+        cand = cand["alternatives"]
 
-    # For simplicity in this sync function, we'll await them one by one.
-    # In a real async node, we'd use asyncio.gather.
-    raw_candidates = [future.result().content for future in candidate_futures]
+    valid: list[dict] = []
+    for c in cand if isinstance(cand, list) else []:
+        try:
+            valid.append(Plan.model_validate(c).model_dump(by_alias=True))
+        except ValidationError:
+            continue
+    if not valid:
+        valid = [{
+            "goal": user_goal,
+            "nodes":[
+                {"id":"plan","type":"llm","prompt":"Split the task into 2–5 concrete steps."},
+                {"id":"do","type":"llm","prompt":"Execute the next step. When done, write ONLY DONE."},
+                {"id":"finish","type":"llm","prompt":"Summarize briefly."}],
+            "edges":[
+                {"from":"plan","to":"do"},
+                {"from":"do","to":"do","if":"more_steps"},
+                {"from":"do","to":"finish","if":"steps_done"}],
+            "confidence":0.5
+        }]
 
-    # 2. Validate and Judge Candidates
-    judge_system_prompt = "You are a plan evaluator. Given a user goal and a JSON plan, rate the plan's quality on a scale from 0.0 to 1.0. Output ONLY a JSON object with 'score' and 'reason' keys."
-    valid_plans = []
-    for raw_plan in raw_candidates:
-        plan = _parse_and_validate_plan(raw_plan, llm)
-        if plan:
-            judge_user_prompt = f"User Goal:\n{user_goal}\n\nPlan:\n{plan.model_dump_json(indent=2)}"
-            judge_response = llm.invoke([SystemMessage(content=judge_system_prompt), HumanMessage(content=judge_user_prompt)]).content
-            try:
-                judge_result = json.loads(judge_response)
-                valid_plans.append({"plan": plan, "score": judge_result.get("score", 0.0), "reason": judge_result.get("reason", "")})
-            except json.JSONDecodeError:
-                logging.warning("Failed to parse judge's response.")
-                valid_plans.append({"plan": plan, "score": 0.3, "reason": "Judge response was malformed."})
+    # Judge
+    scored: list[tuple[float, str, dict]] = []
+    judge = get_chat_model()
+    for p in valid:
+        crit = judge.invoke([
+            SystemMessage('Score 0..1 on clarity, coverage, simplicity. Output JSON {"score":x,"reason":""}.'),
+            HumanMessage(json.dumps({"goal": user_goal, "plan": p}, ensure_ascii=False)),
+        ]).content
+        try:
+            j = json.loads(_extract_json(crit))
+            scored.append((float(j.get("score", 0.0)), j.get("reason",""), p))
+        except Exception:
+            scored.append((0.5, "fallback", p))
 
-    # 3. Select Best Plan or Create Fallback
-    if not valid_plans:
-        best_plan = _create_fallback_plan(user_goal)
-        best_score = 0.1
-    else:
-        best_candidate = max(valid_plans, key=lambda x: x["score"])
-        best_plan = best_candidate["plan"]
-        best_score = best_candidate["score"]
-        logging.info(f"Selected best plan with judge score: {best_score}. Reason: {best_candidate['reason']}")
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[0][2]
+    best["confidence"] = float(min(1.0, max(0.0, best.get("confidence") or scored[0][0])))
 
-    # 4. Compute Final Confidence and Update State
-    final_confidence, confidence_terms = compute_plan_confidence(best_plan, state)
-    best_plan.confidence = final_confidence
-
-    new_messages = state.get("messages", []) + [ChatMessage(role="assistant", content=f"Selected ToT plan (judge_score={best_score:.2f}, final_confidence={final_confidence:.2f}).")]
-
-    # Initialize metrics if they don't exist
-    metrics = state.get("metrics", {"prior_attempts": 0, "prior_successes": 0, "fail_streak": 0})
-
-    return {
-        **state,
-        "plan": best_plan.model_dump(),
-        "messages": new_messages,
-        "flags": {"more_steps": True, "steps_done": False},
-        "metrics": metrics,
-        "debug": {"confidence_terms": confidence_terms},
-    }
+    msgs = list(state.get("messages") or [])
+    msgs.append({"role":"assistant","content":f"Selected ToT plan (score={scored[0][0]:.2f})."})
+    return {"plan": best, "messages": msgs, "flags":{"more_steps": True, "steps_done": False}}
