@@ -1,37 +1,19 @@
-# This file will contain the logic for generating the final report.
-# It starts with the schemas for the report data.
-from pydantic import BaseModel
-from typing import Dict
+from __future__ import annotations
+import json
+from pathlib import Path
+from typing import Any, Dict
 
-# These imports will be circular if not handled carefully,
-# but for schemas it's often fine. We will import the actual node functions
-# inside the report generation function to avoid this.
-from .planner import Plan
-from .tests_node import TestsSummary
-
-
-# ## 4.6 Report summary (`projects/<name>/reports/summary.json`)
-# Schemas for the final summary report.
-
-class ConfidenceDebug(BaseModel):
-    """Debug information about the confidence score calculation."""
-    self_score: float
-    structural: float
-    coverage: float
-    prior: float
-    final: float
-    weights: Dict[str, float]
-
-class ReportSummary(BaseModel):
-    """The main schema for the summary.json report."""
-    project_name: str
-    goal: str
-    plan: Plan
-    confidence: float
-    confidence_terms: ConfidenceDebug
-    tests: TestsSummary
-    executor_passed: bool
-    sandbox_ok: bool
-    sandbox_log_path: str
-    satisfaction_score: float  # 0..1
-    notes: str
+def report(state: Dict[str, Any]) -> Dict[str, Any]:
+    path = Path(state.get("scaffold", {}).get("path", ""))
+    summ = {
+        "goal": (state.get("plan") or {}).get("goal",""),
+        "plan": state.get("plan"),
+        "confidence": (state.get("plan") or {}).get("confidence", None),
+        "tests": state.get("tests"),
+        "executor_passed": state.get("passed", False),
+        "sandbox": state.get("sandbox"),
+        "notes": "MVP run."
+    }
+    path.joinpath("reports/summary.json").write_text(json.dumps(summ, indent=2), encoding="utf-8")
+    state["report"] = {"ok": True, "summary_path": str(path / "reports/summary.json")}
+    return state
