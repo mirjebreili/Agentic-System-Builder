@@ -43,3 +43,9 @@ class Settings(BaseSettings):
 
 # Single, shared instance of the settings
 settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Return the shared application settings."""
+    return settings
+

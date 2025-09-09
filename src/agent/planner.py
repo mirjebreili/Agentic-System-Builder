@@ -1,12 +1,12 @@
 import json
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 from jinja2 import Environment, FileSystemLoader
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
-from prompt2graph.config.settings import settings
+from prompt2graph.config.settings import get_settings
 from prompt2graph.llm.client import get_chat_model
 from .confidence import compute_plan_confidence
 from .state import AppState, ChatMessage
@@ -92,14 +92,25 @@ def plan_tot(state: AppState) -> AppState:
     llm = get_chat_model()
     user_goal = state["messages"][-1]["content"]
 
+    # Load configuration
+    settings = get_settings()
+    tot_gate = settings.tot_gate
+    branches = settings.tot_branches if tot_gate else 1
+
     # 1. Generate K candidate plans
     plan_system_prompt = _render_prompt("plan_system.jinja")
     plan_user_prompt = _render_prompt("plan_user.jinja", user_goal=user_goal)
 
-    logging.info(f"Generating {settings.tot_branches} plan candidates for goal: '{user_goal}'")
+    if tot_gate:
+        logging.info(
+            f"Generating {branches} plan candidates for goal: '{user_goal}'"
+        )
+    else:
+        logging.info(f"Generating single plan candidate for goal: '{user_goal}'")
+
     candidate_futures = [
         llm.ainvoke([SystemMessage(content=plan_system_prompt), HumanMessage(content=plan_user_prompt)])
-        for _ in range(settings.tot_branches)
+        for _ in range(branches)
     ]
 
     # For simplicity in this sync function, we'll await them one by one.
