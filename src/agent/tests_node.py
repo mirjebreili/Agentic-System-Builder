@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict
-from .planner import plan_tot, Plan
-from .executor import execute_deep
+from src.agent.planner import plan_tot, Plan
+from src.agent.executor import execute_deep
 
 def test_agents(state: Dict[str, Any]) -> Dict[str, Any]:
     # Planner dry test

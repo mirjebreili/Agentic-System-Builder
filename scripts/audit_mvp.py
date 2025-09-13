@@ -25,7 +25,7 @@ if (ROOT/"langgraph.json").exists():
     try:
         lg = json.loads((ROOT/"langgraph.json").read_text())
         expect = lg.get("graphs",{}).get("agent","")
-        ok(expect.endswith("src/agent/graph.py:graph"), "langgraph.json maps graphs.agent to src/agent/graph.py:graph")
+        ok(expect.endswith("src/agent/graph.py:graph") or expect.endswith("src.agent.graph:graph"), "langgraph.json maps graphs.agent to src/agent/graph.py:graph")
         ok("." in (lg.get("dependencies") or []), "langgraph.json has dependencies=['.']")
         ok(lg.get("env","") == "./.env", "langgraph.json sets env ./ .env")
     except Exception as e:

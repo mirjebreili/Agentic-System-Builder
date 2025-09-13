@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from langchain_openai import ChatOpenAI
-from config.settings import get_settings
+from src.config.settings import get_settings
 
 def get_chat_model(**overrides: Any) -> ChatOpenAI:
     cfg = get_settings()
