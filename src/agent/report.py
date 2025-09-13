@@ -9,6 +9,7 @@ def report(state: Dict[str, Any]) -> Dict[str, Any]:
         "goal": (state.get("plan") or {}).get("goal",""),
         "plan": state.get("plan"),
         "confidence": (state.get("plan") or {}).get("confidence", None),
+        "confidence_breakdown": state.get("debug", {}).get("confidence_terms"),
         "tests": state.get("tests"),
         "executor_passed": state.get("passed", False),
         "sandbox": state.get("sandbox"),

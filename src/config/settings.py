@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     tot_branches: int = Field(default=3, env="TOT_BRANCHES")
     planner_confidence_threshold: float = Field(default=0.6, env="PLANNER_CONFIDENCE_THRESHOLD")
 
+    # HITL
+    require_plan_approval: bool = Field(default=True, env="REQUIRE_PLAN_APPROVAL")
+
     # Confidence weights
     conf_w_self: float = Field(default=0.4, env="CONF_W_SELF")
     conf_w_struct: float = Field(default=0.25, env="CONF_W_STRUCT")

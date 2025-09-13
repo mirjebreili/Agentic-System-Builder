@@ -15,10 +15,10 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
     base = ROOT / "projects" / name
     base.mkdir(parents=True, exist_ok=True)
     (base / "prompts").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "agent").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "config").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "llm").mkdir(parents=True, exist_ok=True)
-    (base / "tests").mkdir(parents=True, exist_ok=True)
+    for d in ["src/agent", "src/config", "src/llm", "tests", "reports", "prompts"]:
+        (base / d).mkdir(parents=True, exist_ok=True)
+    for f in ["src/__init__.py", "src/agent/__init__.py", "src/config/__init__.py", "src/llm/__init__.py"]:
+        (base / f).touch()
     (base / "reports").mkdir(parents=True, exist_ok=True)
 
     # langgraph.json
@@ -119,19 +119,19 @@ def execute(state: dict) -> dict:
     # child graph.py
     (base / "src/agent/graph.py").write_text("""# generated
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint import MemorySaver
-from typing import Dict, Any
+from langgraph.checkpoint.sqlite import SqliteSaver
+from .state import AppState
 from .planner import plan_node
 from .executor import execute
 
 def _make_graph():
-    g = StateGraph(dict)
+    g = StateGraph(AppState)
     g.add_node("plan", plan_node)
     g.add_node("execute", execute)
     g.add_edge(START, "plan")
     g.add_edge("plan", "execute")
     g.add_edge("execute", END)
-    return g.compile(checkpointer=MemorySaver())
+    return g.compile(checkpointer=SqliteSaver.from_conn_string("state.db"))
 
 graph = _make_graph()
 """, encoding="utf-8")

@@ -44,7 +44,10 @@ def test_agents(state: Dict[str, Any]) -> Dict[str, Any]:
            "executor_ok": ok_exec, "executor_reason": reason_e,
            "steps_used": steps_used, "overall_ok": overall}
 
-    if not overall:
+    # Only trigger replan ONCE. If we've failed before, don't set the flag again.
+    already_failed = state.get("tests", {}).get("overall_ok") is False
+    if not overall and not already_failed:
         state["replan"] = True
+
     state["tests"] = out
     return state
