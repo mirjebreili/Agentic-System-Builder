@@ -1,11 +1,10 @@
 from __future__ import annotations
 from typing import Dict, Any
+import sqlite3
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 import asb_cfg.settings_v2 as s
-print("### USING settings_v2 FROM:", s.__file__)
 from asb_cfg.settings_v2 import SETTINGS_UID
-print("### SETTINGS UID:", SETTINGS_UID)
 from asb.agent.state import AppState
 from asb.agent.planner import plan_tot
 from asb.agent.confidence import compute_plan_confidence
@@ -15,6 +14,9 @@ from asb.agent.executor import execute_deep
 from asb.agent.scaffold import scaffold_project
 from asb.agent.sandbox import sandbox_smoke
 from asb.agent.report import report
+
+print("### USING settings_v2 FROM:", s.__file__)
+print("### SETTINGS UID:", SETTINGS_UID)
 
 def route_after_review(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "test_agents"
@@ -26,7 +28,7 @@ def _make_graph():
     g = StateGraph(AppState)
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
-    g.add_node("review_plan", review_plan)     # HITL interrupt
+    g.add_node("review_plan", review_plan)  # HITL interrupt; node re-executes after resume
     g.add_node("test_agents", test_agents)
     g.add_node("execute_deep", execute_deep)
     g.add_node("scaffold_project", scaffold_project)
@@ -43,6 +45,7 @@ def _make_graph():
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
 
-    return g.compile()
+    memory = SqliteSaver(sqlite3.connect(":memory:", check_same_thread=False))
+    return g.compile(checkpointer=memory)
 
 graph = _make_graph()
