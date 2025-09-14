@@ -94,3 +94,7 @@ state.db
 # project specific
 /projects/
 /reports/
+
+
+# langgraph
+.langgraph_api/
