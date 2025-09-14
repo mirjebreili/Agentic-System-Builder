@@ -1,9 +1,10 @@
 from __future__ import annotations
-import json, re
-from pathlib import Path
+import json
+import re
 from typing import Any, Dict
-from pydantic import BaseModel, Field, ValidationError
 from langchain_core.messages import SystemMessage, HumanMessage
+from pydantic import BaseModel, Field, ValidationError
+from asb.agent.prompts_util import find_prompts_dir
 from asb.llm.client import get_chat_model
 
 class PlanNode(BaseModel):
@@ -23,18 +24,7 @@ class Plan(BaseModel):
     edges: list[PlanEdge]
     confidence: float | None = None
 
-def _find_prompts_dir() -> Path:
-    """Search for the prompts directory."""
-    # This simplified version is more robust against syntax errors.
-    # It assumes the script is run from the repo root or a similar context.
-    # where `prompts` is a direct child of the current working directory or repo root.
-    if (Path.cwd() / "prompts").exists():
-        return Path.cwd() / "prompts"
-    if (Path(__file__).resolve().parents[3] / "prompts").exists():
-        return Path(__file__).resolve().parents[3] / "prompts"
-    raise FileNotFoundError("Could not find the 'prompts' directory.")
-
-PROMPTS_DIR = _find_prompts_dir()
+PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
