@@ -1,25 +1,10 @@
 import json
 import pytest
-import sys
-import types
-from pathlib import Path
-
-# Expose the project under the expected package name `prompt2graph`
-ROOT = Path(__file__).resolve().parents[1] / "src"
-sys.path.append(str(ROOT))
-pkg = types.ModuleType("prompt2graph")
-pkg.__path__ = [str(ROOT)]
-sys.modules.setdefault("prompt2graph", pkg)
-
+from asb.llm.client import get_chat_model
 
 class FakeResponse:
     def __init__(self, content: str):
         self.content = content
-
-    def result(self):
-        # mimic the future interface used in plan_tot
-        return self
-
 
 class FakeChatModel:
     """Deterministic stand‑in for the real chat model."""
@@ -38,24 +23,28 @@ class FakeChatModel:
                     {"from": "do", "to": "do", "if": "more_steps"},
                     {"from": "do", "to": "finish", "if": "steps_done"},
                 ],
+                "confidence": 0.9
             }
         )
 
-    def ainvoke(self, messages):
+    def invoke(self, messages, **kwargs):
+        system_content = messages[0].content if messages else ""
+        if "score 0..1" in system_content.lower():
+            return FakeResponse('{"score": 1.0, "reason": "looks good"}')
+        if "json array of plan objects" in system_content.lower():
+             # In the ToT planning, we ask for an array of plans
+            return FakeResponse(f"[{self._plan_json}]")
         return FakeResponse(self._plan_json)
 
-    def invoke(self, messages):
-        system_content = messages[0].content if messages else ""
-        if "plan evaluator" in system_content.lower():
-            return FakeResponse('{"score": 1.0, "reason": "looks good"}')
-        return FakeResponse(self._plan_json)
+    def ainvoke(self, messages, **kwargs):
+        return self.invoke(messages)
 
 
 @pytest.fixture(autouse=True)
 def mock_chat_model(monkeypatch):
-    """Automatically patch get_chat_model to return the fake model."""
+    """Automatically patch get_chat_model to return the fake model for all tests."""
     fake = FakeChatModel()
-    monkeypatch.setattr("prompt2graph.llm.client.get_chat_model", lambda: fake)
-    # planner imports get_chat_model directly, so patch it as well
-    monkeypatch.setattr("prompt2graph.agent.planner.get_chat_model", lambda: fake, raising=False)
+    monkeypatch.setattr("asb.llm.client.get_chat_model", lambda **kwargs: fake)
+    monkeypatch.setattr("asb.agent.planner.get_chat_model", lambda **kwargs: fake)
+    monkeypatch.setattr("asb.agent.executor.get_chat_model", lambda **kwargs: fake)
     return fake

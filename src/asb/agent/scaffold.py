@@ -75,9 +75,24 @@ class PlanEdge(BaseModel):
 class Plan(BaseModel):
     goal: str; nodes: List[PlanNode]; edges: List[PlanEdge]; confidence: Optional[float] = None
 
+def _find_prompts_dir() -> Path:
+    possible_paths = [
+        Path(__file__).resolve().parents[2] / "prompts",
+        Path(__file__).resolve().parents[1] / "prompts",
+    ]
+    for path in possible_paths:
+        if path.exists() and path.is_dir():
+            return path
+    raise FileNotFoundError(f"Could not find prompts directory. Searched in: {[str(p) for p in possible_paths]}")
+
+PROMPTS_DIR = _find_prompts_dir()
+SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
+USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
+
 def plan_node(state: dict) -> dict:
     llm = get_chat_model()
     goal = (state.get("messages") or [{{}}])[-1].get("content","Goal")
+    user_prompt = USER_TMPL.replace("{{ user_goal }}", goal)
     nodes = [
         {{"id":"plan","type":"llm","prompt": {json.dumps(plan_nodes.get('plan',{{}}).get('prompt','Split into steps.'))} }},
         {{"id":"do","type":"llm","prompt": {json.dumps(plan_nodes.get('do',{{}}).get('prompt','Do next step; write ONLY DONE when done.'))} }},

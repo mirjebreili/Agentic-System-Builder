@@ -23,7 +23,18 @@ class Plan(BaseModel):
     edges: list[PlanEdge]
     confidence: float | None = None
 
-PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+def _find_prompts_dir() -> Path:
+    """Search for the prompts directory."""
+    # This simplified version is more robust against syntax errors.
+    # It assumes the script is run from the repo root or a similar context.
+    # where `prompts` is a direct child of the current working directory or repo root.
+    if (Path.cwd() / "prompts").exists():
+        return Path.cwd() / "prompts"
+    if (Path(__file__).resolve().parents[3] / "prompts").exists():
+        return Path(__file__).resolve().parents[3] / "prompts"
+    raise FileNotFoundError("Could not find the 'prompts' directory.")
+
+PROMPTS_DIR = _find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 

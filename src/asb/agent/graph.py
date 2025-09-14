@@ -43,6 +43,6 @@ def _make_graph():
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
 
-    return g.compile(checkpointer=SqliteSaver("state.db"))
+    return g.compile()
 
 graph = _make_graph()
