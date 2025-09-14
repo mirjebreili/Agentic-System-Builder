@@ -49,8 +49,13 @@ where = ["src"]
     if src_env.exists():
         shutil.copy(src_env, base / ".env.example")
 
-    # copy minimal settings, client, state
-    for rel in ["src/config/settings.py", "src/llm/client.py", "src/agent/state.py"]:
+    # copy minimal settings, client, state, and prompt utilities
+    for rel in [
+        "src/config/settings.py",
+        "src/llm/client.py",
+        "src/agent/state.py",
+        "src/agent/prompts_util.py",
+    ]:
         dst = base / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / rel, dst)
@@ -67,6 +72,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from langchain_core.messages import HumanMessage
 from llm.client import get_chat_model
+from .prompts_util import find_prompts_dir
 
 class PlanNode(BaseModel):
     id: str; type: str; prompt: Optional[str] = None; tool: Optional[str] = None
@@ -75,17 +81,7 @@ class PlanEdge(BaseModel):
 class Plan(BaseModel):
     goal: str; nodes: List[PlanNode]; edges: List[PlanEdge]; confidence: Optional[float] = None
 
-def _find_prompts_dir() -> Path:
-    possible_paths = [
-        Path(__file__).resolve().parents[2] / "prompts",
-        Path(__file__).resolve().parents[1] / "prompts",
-    ]
-    for path in possible_paths:
-        if path.exists() and path.is_dir():
-            return path
-    raise FileNotFoundError(f"Could not find prompts directory. Searched in: {[str(p) for p in possible_paths]}")
-
-PROMPTS_DIR = _find_prompts_dir()
+PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
