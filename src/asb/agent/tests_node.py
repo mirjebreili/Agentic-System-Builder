@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict
-from src.agent.planner import plan_tot, Plan
-from src.agent.executor import execute_deep
+from asb.agent.planner import plan_tot, Plan
+from asb.agent.executor import execute_deep
 
 def test_agents(state: Dict[str, Any]) -> Dict[str, Any]:
     # Planner dry test
@@ -44,10 +44,7 @@ def test_agents(state: Dict[str, Any]) -> Dict[str, Any]:
            "executor_ok": ok_exec, "executor_reason": reason_e,
            "steps_used": steps_used, "overall_ok": overall}
 
-    # Only trigger replan ONCE. If we've failed before, don't set the flag again.
-    already_failed = state.get("tests", {}).get("overall_ok") is False
-    if not overall and not already_failed:
+    if not overall:
         state["replan"] = True
-
     state["tests"] = out
     return state

@@ -2,6 +2,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings
+import pydantic
+
+assert int(pydantic.__version__.split('.')[0]) >= 2, "Wrong pydantic major version loaded"
+SETTINGS_UID = "settings_v2_20250913"
 
 class Settings(BaseSettings):
     # LLM

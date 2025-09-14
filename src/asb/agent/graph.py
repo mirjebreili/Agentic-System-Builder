@@ -2,15 +2,19 @@ from __future__ import annotations
 from typing import Dict, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
-from src.agent.state import AppState
-from src.agent.planner import plan_tot
-from src.agent.confidence import compute_plan_confidence
-from src.agent.hitl import review_plan
-from src.agent.tests_node import test_agents
-from src.agent.executor import execute_deep
-from src.agent.scaffold import scaffold_project
-from src.agent.sandbox import sandbox_smoke
-from src.agent.report import report
+import asb_cfg.settings_v2 as s
+print("### USING settings_v2 FROM:", s.__file__)
+from asb_cfg.settings_v2 import SETTINGS_UID
+print("### SETTINGS UID:", SETTINGS_UID)
+from asb.agent.state import AppState
+from asb.agent.planner import plan_tot
+from asb.agent.confidence import compute_plan_confidence
+from asb.agent.hitl import review_plan
+from asb.agent.tests_node import test_agents
+from asb.agent.executor import execute_deep
+from asb.agent.scaffold import scaffold_project
+from asb.agent.sandbox import sandbox_smoke
+from asb.agent.report import report
 
 def route_after_review(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "test_agents"
@@ -39,6 +43,6 @@ def _make_graph():
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
 
-    return g.compile()
+    return g.compile(checkpointer=SqliteSaver("state.db"))
 
 graph = _make_graph()

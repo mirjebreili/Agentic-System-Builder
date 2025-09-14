@@ -1,6 +1,6 @@
 [project]
 name = "agentic-system-builder"
-version = "0.1.0"
+version = "0.1.3"
 requires-python = ">=3.11"
 dependencies = [
   "langgraph>=0.2.39",

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict
 from pydantic import BaseModel, Field, ValidationError
 from langchain_core.messages import SystemMessage, HumanMessage
-from src.llm.client import get_chat_model
+from asb.llm.client import get_chat_model
 
 class PlanNode(BaseModel):
     id: str
