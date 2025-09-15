@@ -57,13 +57,16 @@ where = ["src"]
         "src/asb/agent/state.py": "src/agent/state.py",
         "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
     }
+    missing_files = []
     for src_rel, dest_rel in files.items():
         dst = base / dest_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         src_path = ROOT / src_rel
-        if not src_path.exists():
-            raise FileNotFoundError(f"Template file not found: {src_path}")
-        shutil.copy(src_path, dst)
+        if src_path.exists():
+            shutil.copy(src_path, dst)
+        else:
+            missing_files.append(str(src_path))
+            print(f"Template file missing, skipping: {src_path}")
 
     # imports are already correct in copied files
 
@@ -171,4 +174,6 @@ langgraph dev
 """, encoding="utf-8")
 
     state["scaffold"] = {"path": str(base), "ok": True}
+    if missing_files:
+        state["scaffold"]["missing"] = missing_files
     return state
