@@ -11,6 +11,17 @@ Pipeline: ToT Planner → HITL plan review → Agent self-tests → Deep Executo
 
 The generated project follows LangGraph’s CLI app structure and is ready to extend with tools (MCP) later.
 
+### HITL plan review
+
+When the workflow pauses at the plan review step, resume it by sending one of
+the following payloads:
+
+- `{"action": "approve", "plan": {...}}`
+- `{"action": "revise", "feedback": "..."}`
+
+For convenience the shorthand strings `"approve"` or `"revise"` are also
+accepted.
+
 ## Environment variables
 
 The `.env.example` file includes common configuration. Copy it to `.env` and override values as needed:
