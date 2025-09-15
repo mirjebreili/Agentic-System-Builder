@@ -100,9 +100,9 @@ def plan_node(state: dict) -> dict:
     goal = (state.get("messages") or [{{}}])[-1].get("content","Goal")
     user_prompt = USER_TMPL.replace("{{ user_goal }}", goal)
     nodes = [
-        {{"id":"plan","type":"llm","prompt": {json.dumps(plan_nodes.get('plan',{{}}).get('prompt','Split into steps.'))} }},
-        {{"id":"do","type":"llm","prompt": {json.dumps(plan_nodes.get('do',{{}}).get('prompt','Do next step; write ONLY DONE when done.'))} }},
-        {{"id":"finish","type":"llm","prompt": {json.dumps(plan_nodes.get('finish',{{}}).get('prompt','Summarize briefly.'))} }}
+        {{"id":"plan","type":"llm","prompt": {json.dumps(plan_nodes.get('plan',{}).get('prompt','Split into steps.'))} }},
+        {{"id":"do","type":"llm","prompt": {json.dumps(plan_nodes.get('do',{}).get('prompt','Do next step; write ONLY DONE when done.'))} }},
+        {{"id":"finish","type":"llm","prompt": {json.dumps(plan_nodes.get('finish',{}).get('prompt','Summarize briefly.'))} }}
     ]
     edges = [{{"from":"plan","to":"do"}},{{"from":"do","to":"do","if":"more_steps"}},{{"from":"do","to":"finish","if":"steps_done"}}]
     plan = Plan(goal=goal, nodes=[PlanNode(**n) for n in nodes], edges=[PlanEdge(**e) for e in edges], confidence=0.8).model_dump(by_alias=True)
