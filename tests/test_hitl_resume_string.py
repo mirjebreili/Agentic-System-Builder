@@ -1,3 +1,4 @@
+import pytest
 from asb.agent import hitl
 
 
@@ -17,4 +18,10 @@ def test_review_plan_accepts_revise_string(monkeypatch):
     state = _run_review(monkeypatch, "revise")
     assert state["review"]["action"] == "revise"
     assert state["replan"] is True
+
+
+def test_review_plan_rejects_unknown_string(monkeypatch):
+    monkeypatch.setattr(hitl, "interrupt", lambda payload: "bad")
+    with pytest.raises(ValueError, match="Unknown action 'bad'"):
+        hitl.review_plan({"plan": {}})
 
