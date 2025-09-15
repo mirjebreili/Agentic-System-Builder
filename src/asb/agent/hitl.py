@@ -21,17 +21,17 @@ def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(resume, str):
         resume = {"action": resume}
     action = (resume or {}).get("action")
+    if action not in {"approve", "revise"}:
+        raise ValueError(f"Unknown action '{action}'. Expected 'approve' or 'revise'.")
     if action == "approve":
         new_plan = (resume or {}).get("plan") or state.get("plan", {})
         state["plan"] = new_plan
         state["review"] = {"action": "approve"}
         state["replan"] = False
-    elif action == "revise":
+    else:  # action == "revise"
         state["review"] = {
             "action": "revise",
             "feedback": (resume or {}).get("feedback", ""),
         }
         state["replan"] = True
-    else:
-        raise ValueError(f"Unknown action: {action}")
     return state
