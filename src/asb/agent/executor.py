@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Dict
 from langchain_core.messages import HumanMessage
 from asb.llm.client import get_chat_model
-from asb_cfg.settings_v2 import get_settings
+from config.settings import get_settings
 
 _DONE_TOKENS = ("DONE","COMPLETED","FINISHED","ALL STEPS DONE")
 

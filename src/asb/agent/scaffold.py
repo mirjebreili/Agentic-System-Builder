@@ -51,7 +51,7 @@ where = ["src"]
 
     # copy minimal settings, client, state, and prompt utilities
     files = {
-        "src/asb_cfg/settings_v2.py": "src/config/settings.py",
+        "src/config/settings.py": "src/config/settings.py",
         "src/asb/llm/client.py": "src/llm/client.py",
         "src/asb/agent/state.py": "src/agent/state.py",
         "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
@@ -61,15 +61,7 @@ where = ["src"]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / src_rel, dst)
 
-    # ensure imports match new locations
-    client_path = base / "src" / "llm" / "client.py"
-    if client_path.exists():
-        txt = client_path.read_text(encoding="utf-8")
-        txt = txt.replace(
-            "from asb_cfg.settings_v2 import get_settings",
-            "from config.settings import get_settings",
-        )
-        client_path.write_text(txt, encoding="utf-8")
+    # imports are already correct in copied files
 
     # prompts (simple copies from parent)
     (base / "prompts" / "plan_system.jinja").write_text(

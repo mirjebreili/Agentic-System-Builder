@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict
-from asb_cfg.settings_v2 import get_settings
+from config.settings import get_settings
 
 def _structural_score(plan: Dict[str, Any]) -> float:
     nodes = plan.get("nodes", []) or []
