@@ -59,7 +59,10 @@ where = ["src"]
     for src_rel, dest_rel in files.items():
         dst = base / dest_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(ROOT / src_rel, dst)
+        src_path = ROOT / src_rel
+        if not src_path.exists():
+            raise FileNotFoundError(f"Template file not found: {src_path}")
+        shutil.copy(src_path, dst)
 
     # imports are already correct in copied files
 
