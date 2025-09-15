@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any
+import os
 import sqlite3
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -24,7 +25,7 @@ def route_after_review(state: Dict[str, Any]) -> str:
 def route_after_tests(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "execute_deep"
 
-def _make_graph():
+def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g = StateGraph(AppState)
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
@@ -45,7 +46,15 @@ def _make_graph():
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
 
-    memory = SqliteSaver(sqlite3.connect(":memory:", check_same_thread=False))
-    return g.compile(checkpointer=memory)
+    dev_server = os.environ.get("ASB_DEV_SERVER")
+    if path and not dev_server:
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        conn = sqlite3.connect(path, check_same_thread=False)
+        memory = SqliteSaver(conn)
+        return g.compile(checkpointer=memory)
+
+    return g.compile()
 
 graph = _make_graph()
