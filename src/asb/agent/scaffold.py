@@ -3,7 +3,7 @@ import json, os, re, shutil
 from pathlib import Path
 from typing import Any, Dict
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 def _slug(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+","-", s.strip())
@@ -50,15 +50,26 @@ where = ["src"]
         shutil.copy(src_env, base / ".env.example")
 
     # copy minimal settings, client, state, and prompt utilities
-    for rel in [
-        "src/config/settings.py",
-        "src/llm/client.py",
-        "src/agent/state.py",
-        "src/agent/prompts_util.py",
-    ]:
-        dst = base / rel
+    files = {
+        "src/asb_cfg/settings_v2.py": "src/config/settings.py",
+        "src/asb/llm/client.py": "src/llm/client.py",
+        "src/asb/agent/state.py": "src/agent/state.py",
+        "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
+    }
+    for src_rel, dest_rel in files.items():
+        dst = base / dest_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(ROOT / rel, dst)
+        shutil.copy(ROOT / src_rel, dst)
+
+    # ensure imports match new locations
+    client_path = base / "src" / "llm" / "client.py"
+    if client_path.exists():
+        txt = client_path.read_text(encoding="utf-8")
+        txt = txt.replace(
+            "from asb_cfg.settings_v2 import get_settings",
+            "from config.settings import get_settings",
+        )
+        client_path.write_text(txt, encoding="utf-8")
 
     # prompts (simple copies from parent)
     (base / "prompts" / "plan_system.jinja").write_text(
