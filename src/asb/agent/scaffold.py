@@ -3,6 +3,7 @@ import json, os, re, shutil
 from pathlib import Path
 from typing import Any, Dict
 
+# repository root
 ROOT = Path(__file__).resolve().parents[3]
 
 def _slug(s: str) -> str:
