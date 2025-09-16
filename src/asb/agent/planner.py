@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 import re
 from typing import Any, Dict
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -23,6 +24,8 @@ class Plan(BaseModel):
     nodes: list[PlanNode]
     edges: list[PlanEdge]
     confidence: float | None = None
+
+logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
@@ -54,7 +57,12 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
         cand = json.loads(_extract_json(resp))
     except Exception:
         fix = llm.invoke([SystemMessage("Output ONLY a JSON array of plan objects."), HumanMessage(resp)]).content
-        cand = json.loads(_extract_json(fix))
+        logger.debug("Planner fix raw output: %s", fix)
+        try:
+            cand = json.loads(_extract_json(fix))
+        except json.JSONDecodeError:
+            logger.warning("Planner fix output is not valid JSON. Falling back to default plan.", exc_info=True)
+            cand = []
     if isinstance(cand, dict) and "alternatives" in cand:
         cand = cand["alternatives"]
 
