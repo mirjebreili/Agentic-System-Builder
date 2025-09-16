@@ -22,10 +22,16 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
     (base / "tests").mkdir(parents=True, exist_ok=True)
     (base / "reports").mkdir(parents=True, exist_ok=True)
 
+    for package_dir in ("src", "src/agent", "src/llm", "src/config"):
+        init_path = base / package_dir / "__init__.py"
+        init_path.parent.mkdir(parents=True, exist_ok=True)
+        if not init_path.exists():
+            init_path.write_text("", encoding="utf-8")
+
     # langgraph.json
     (base / "langgraph.json").write_text(
-        json.dumps({"graphs":{"agent":"src/agent/graph.py:graph"},
-                    "dependencies":["."],"env":"./.env"}, indent=2), encoding="utf-8")
+        json.dumps({"graphs": {"agent": "agent.graph:graph"},
+                    "dependencies": ["."], "env": "./.env"}, indent=2), encoding="utf-8")
 
     # pyproject.toml
     (base / "pyproject.toml").write_text("""[project]
@@ -159,7 +165,7 @@ graph = _make_graph()
 
     # tests
     (base / "tests" / "test_smoke.py").write_text("""def test_import_graph():
-    from src.agent.graph import graph
+    from agent.graph import graph
     assert graph is not None
 """, encoding="utf-8")
 

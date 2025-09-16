@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -59,6 +60,20 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
 
         graph_contents = (project_dir / "src" / "agent" / "graph.py").read_text(encoding="utf-8")
         assert "from langgraph.checkpoint.memory import MemorySaver" in graph_contents
+
+        langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
+        assert langgraph_config["graphs"]["agent"] == "agent.graph:graph"
+
+        for package_file in (
+            "src/__init__.py",
+            "src/agent/__init__.py",
+            "src/llm/__init__.py",
+            "src/config/__init__.py",
+        ):
+            assert (project_dir / package_file).exists()
+
+        smoke_contents = (project_dir / "tests" / "test_smoke.py").read_text(encoding="utf-8")
+        assert "from agent.graph import graph" in smoke_contents
 
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         for dependency in UPDATED_DEPENDENCIES:
