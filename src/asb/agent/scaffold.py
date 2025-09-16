@@ -33,9 +33,9 @@ name = "generated-agent"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-  "langgraph>=0.2.39,<0.3.0",
-  "langchain-core>=0.2.28,<0.3.0",
-  "langchain-openai>=0.2.4,<0.3.0",
+  "langgraph>=0.6,<0.7",
+  "langchain-core>=0.3,<0.4",
+  "langchain-openai>=0.3,<0.4",
   "pydantic>=2.7,<3",
 ]
 [build-system]
