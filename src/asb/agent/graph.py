@@ -19,6 +19,16 @@ from asb.agent.report import report
 print("### USING settings_v2 FROM:", s.__file__)
 print("### SETTINGS UID:", SETTINGS_UID)
 
+
+def running_on_langgraph_api() -> bool:
+    """Return ``True`` when executing within a LangGraph-managed runtime."""
+
+    langgraph_env = os.environ.get("LANGGRAPH_ENV", "").lower()
+    if langgraph_env == "cloud":
+        return True
+    return bool(os.environ.get("LANGGRAPH_API_URL"))
+
+
 def route_after_review(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "test_agents"
 
@@ -45,6 +55,9 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_edge("scaffold_project", "sandbox_smoke")
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
+
+    if running_on_langgraph_api():
+        return g.compile(checkpointer=None)
 
     dev_server = os.environ.get("ASB_DEV_SERVER")
     if path and not dev_server:
