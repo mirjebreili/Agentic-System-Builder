@@ -140,7 +140,7 @@ def execute(state: dict) -> dict:
     # child graph.py
     (base / "src/agent/graph.py").write_text("""# generated
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver
 from typing import Dict, Any
 from .planner import plan_node
 from .executor import execute
