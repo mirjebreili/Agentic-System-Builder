@@ -43,6 +43,9 @@ dependencies = [
   "langchain-core>=0.3,<0.4",
   "langchain-openai>=0.3,<0.4",
   "pydantic>=2.7,<3",
+  "langgraph-checkpoint-sqlite",
+  "pytest",
+  "langgraph-cli[inmem]",
 ]
 [build-system]
 requires = ["setuptools","wheel"]
@@ -82,10 +85,9 @@ where = ["src"]
     (base / "prompts" / "plan_user.jinja").write_text("User goal:\n{{ user_goal }}\n", encoding="utf-8")
 
     # child planner.py
-    plan_nodes = {n["id"]: n for n in (state.get("plan") or {}).get("nodes", [])}
-    (base / "src/agent/planner.py").write_text(f"""# generated
+    (base / "src/agent/planner.py").write_text("""# generated
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from langchain_core.messages import HumanMessage
 from llm.client import get_chat_model
 from .prompts_util import find_prompts_dir
@@ -101,46 +103,48 @@ PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
-def plan_node(state: dict) -> dict:
-    llm = get_chat_model()
-    goal = (state.get("messages") or [{{}}])[-1].get("content","Goal")
-    user_prompt = USER_TMPL.replace("{{ user_goal }}", goal)
-    nodes = [
-        {{"id":"plan","type":"llm","prompt": {json.dumps(plan_nodes.get('plan',{}).get('prompt','Split into steps.'))} }},
-        {{"id":"do","type":"llm","prompt": {json.dumps(plan_nodes.get('do',{}).get('prompt','Do next step; write ONLY DONE when done.'))} }},
-        {{"id":"finish","type":"llm","prompt": {json.dumps(plan_nodes.get('finish',{}).get('prompt','Summarize briefly.'))} }}
-    ]
-    edges = [{{"from":"plan","to":"do"}},{{"from":"do","to":"do","if":"more_steps"}},{{"from":"do","to":"finish","if":"steps_done"}}]
-    plan = Plan(goal=goal, nodes=[PlanNode(**n) for n in nodes], edges=[PlanEdge(**e) for e in edges], confidence=0.8).model_dump(by_alias=True)
-    messages = list(state.get("messages") or []) + [{{"role":"assistant","content":"Planned workflow."}}]
-    return {{"plan": plan, "messages": messages, "flags": {{"more_steps": True, "steps_done": False}}}}
+def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        llm = get_chat_model()
+        goal = (state.get("messages") or [{}])[-1].get("content","Goal")
+        user_prompt = USER_TMPL.replace("{{ user_goal }}", goal)
+        nodes = [
+            {"id":"summarize","type":"llm","prompt": "Summarize the following text: {{input_text}}"},
+        ]
+        edges = []
+        plan = Plan(goal=goal, nodes=[PlanNode(**n) for n in nodes], edges=[PlanEdge(**e) for e in edges], confidence=0.9).model_dump(by_alias=True)
+        messages = list(state.get("messages") or []) + [{"role":"assistant","content":"Planned summarization workflow."}]
+        return {"plan": plan, "messages": messages}
+    except Exception as e:
+        # Handle potential errors, e.g., LLM call fails
+        return {"error": str(e), "messages": list(state.get("messages") or [])}
 """, encoding="utf-8")
 
     # child executor.py
     (base / "src/agent/executor.py").write_text("""# generated
 from langchain_core.messages import HumanMessage
 from llm.client import get_chat_model
+from typing import Dict, Any
 
-_DONE = ("DONE","COMPLETED","FINISHED")
+def execute(state: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        llm = get_chat_model()
+        plan = state.get("plan", {})
+        nodes = {n["id"]: n for n in plan.get("nodes", [])}
 
-def _is_done(t:str)->bool: u=(t or "").upper(); return any(x in u for x in _DONE)
+        # Assuming the input text is in the last message
+        input_text = (state.get("messages") or [{}])[-1].get("content", "")
 
-def execute(state: dict) -> dict:
-    llm = get_chat_model()
-    plan = state.get("plan", {})
-    nodes = {n["id"]: n for n in plan.get("nodes", [])}
-    msgs = list(state.get("messages") or [])
-    out = llm.invoke([HumanMessage((nodes.get("plan") or {}).get("prompt","Split into steps."))]).content
-    msgs.append({"role":"assistant","content":f"[plan]\\n{out}"})
-    it=0
-    while it<5:
-        it+=1
-        do = llm.invoke([HumanMessage((nodes.get("do") or {}).get("prompt","Do next step; write ONLY DONE when done."))]).content
-        msgs.append({"role":"assistant","content":f"[do]\\n{do}"})
-        if _is_done(do): break
-    fin = llm.invoke([HumanMessage((nodes.get("finish") or {}).get("prompt","Summarize briefly."))]).content
-    msgs.append({"role":"assistant","content":f"[finish]\\n{fin}"})
-    return {"messages": msgs}
+        summarize_prompt = (nodes.get("summarize") or {}).get("prompt", "Summarize the following text: {{input_text}}")
+        prompt = summarize_prompt.replace("{{input_text}}", input_text)
+
+        summary = llm.invoke([HumanMessage(prompt)]).content
+
+        messages = list(state.get("messages") or []) + [{"role": "assistant", "content": summary}]
+        return {"messages": messages}
+    except Exception as e:
+        # Handle potential errors, e.g., LLM call fails
+        return {"error": str(e), "messages": list(state.get("messages") or [])}
 """, encoding="utf-8")
 
     # child graph.py
