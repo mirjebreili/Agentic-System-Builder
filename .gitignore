@@ -98,3 +98,4 @@ state.db
 
 # langgraph
 .langgraph_api/
+langsmith_llm_traces.json
