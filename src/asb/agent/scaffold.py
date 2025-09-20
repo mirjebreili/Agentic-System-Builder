@@ -43,9 +43,11 @@ dependencies = [
   "langchain-core>=0.3,<0.4",
   "langchain-openai>=0.3,<0.4",
   "pydantic>=2.7,<3",
-  "langgraph-checkpoint-sqlite",
-  "pytest",
-  "langgraph-cli[inmem]",
+  "langgraph-checkpoint-sqlite>=2.0.0",
+  "aiosqlite>=0.17.0",
+  "pytest>=7.0.0",
+  "langgraph-cli[inmem]>=0.1.0",
+  "requests>=2.25.0",
 ]
 [build-system]
 requires = ["setuptools","wheel"]
