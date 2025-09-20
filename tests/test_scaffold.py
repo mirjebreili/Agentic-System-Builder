@@ -23,6 +23,11 @@ UPDATED_DEPENDENCIES = [
     '  "langchain-core>=0.3,<0.4",',
     '  "langchain-openai>=0.3,<0.4",',
     '  "pydantic>=2.7,<3",',
+    '  "langgraph-checkpoint-sqlite>=2.0.0",',
+    '  "aiosqlite>=0.17.0",',
+    '  "pytest>=7.0.0",',
+    '  "langgraph-cli[inmem]>=0.1.0",',
+    '  "requests>=2.25.0",',
 ]
 
 
@@ -59,7 +64,7 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert project_dir.exists()
 
         graph_contents = (project_dir / "src" / "agent" / "graph.py").read_text(encoding="utf-8")
-        assert "from langgraph.checkpoint.memory import MemorySaver" in graph_contents
+        assert "from langgraph.checkpoint.sqlite import SqliteSaver" in graph_contents
 
         langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
         assert langgraph_config["graphs"]["agent"] == "agent.graph:graph"
