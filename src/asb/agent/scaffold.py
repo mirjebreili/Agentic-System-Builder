@@ -147,22 +147,112 @@ def execute(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": str(e), "messages": list(state.get("messages") or [])}
 """, encoding="utf-8")
 
+    # child db_setup.py
+    (base / "src/agent/db_setup.py").write_text("""# generated
+from __future__ import annotations
+
+import logging
+import os
+import sqlite3
+from pathlib import Path
+from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_DB_FILENAME = "state.db"
+DEFAULT_DB_DIR = Path(os.environ.get("AGENT_SQLITE_DIR", ".agent"))
+
+
+def _resolve_path(path: Optional[str]) -> Path:
+    if path:
+        return Path(path)
+    env_path = os.environ.get("AGENT_SQLITE_DB_PATH")
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
+
+
+def ensure_sqlite_db(path: Optional[str] = None) -> Tuple[str, sqlite3.Connection]:
+    db_path = _resolve_path(path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.debug("Ensuring SQLite database at %s", db_path)
+    connection = sqlite3.connect(str(db_path), check_same_thread=False)
+    return str(db_path), connection
+""", encoding="utf-8")
+
     # child graph.py
     (base / "src/agent/graph.py").write_text("""# generated
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from __future__ import annotations
+
+import logging
+import os
+import sys
 from typing import Dict, Any
+
+from langgraph.graph import StateGraph, START, END
+
+logger = logging.getLogger(__name__)
+
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except Exception as exc:  # pragma: no cover - handled via logging below
+    SqliteSaver = None  # type: ignore[assignment]
+    _SQLITE_IMPORT_ERROR = exc
+else:
+    _SQLITE_IMPORT_ERROR = None
+
 from .planner import plan_node
 from .executor import execute
 
-def _make_graph():
+
+def running_on_langgraph_api() -> bool:
+    langgraph_env = os.environ.get("LANGGRAPH_ENV", "").lower()
+    if langgraph_env in {"cloud", "api", "hosted"}:
+        return True
+    if os.environ.get("LANGGRAPH_API_URL") or os.environ.get("LANGGRAPH_CLOUD"):
+        return True
+    argv = [arg.lower() for arg in sys.argv[1:]]
+    return "--langgraph-api" in argv or ("langgraph" in argv and "api" in argv)
+
+
+def _make_graph(path: str | None = None):
     g = StateGraph(dict)
     g.add_node("plan", plan_node)
     g.add_node("execute", execute)
     g.add_edge(START, "plan")
     g.add_edge("plan", "execute")
     g.add_edge("execute", END)
-    return g.compile(checkpointer=MemorySaver())
+
+    if running_on_langgraph_api():
+        logger.info("LangGraph API runtime detected; compiling without a checkpointer.")
+        return g.compile(checkpointer=None)
+
+    if SqliteSaver is None:
+        if _SQLITE_IMPORT_ERROR:
+            logger.warning(
+                "langgraph.checkpoint.sqlite unavailable (%s); using in-memory checkpoints.",
+                _SQLITE_IMPORT_ERROR,
+            )
+        else:
+            logger.warning("SqliteSaver is unavailable; using in-memory checkpoints.")
+        return g.compile()
+
+    try:
+        from . import db_setup
+    except Exception as exc:
+        logger.warning("Failed to import agent.db_setup (%s); using in-memory checkpoints.", exc)
+        return g.compile()
+
+    try:
+        resolved_path, connection = db_setup.ensure_sqlite_db(path)
+    except Exception as exc:
+        logger.warning("SQLite setup failed (%s); using in-memory checkpoints.", exc)
+        return g.compile()
+
+    logger.debug("Using SQLite checkpointer at %s", resolved_path)
+    memory = SqliteSaver(connection)
+    return g.compile(checkpointer=memory)
+
 
 graph = _make_graph()
 """, encoding="utf-8")
