@@ -165,7 +165,7 @@ DEFAULT_DB_FILENAME = "state.db"
 DEFAULT_DB_DIR = Path(os.environ.get("AGENT_SQLITE_DIR", ".agent"))
 
 
-def _resolve_path(path: Optional[str]) -> Path:
+def _resolve_path(path: Optional[str] = None) -> Path:
     if path:
         return Path(path)
     env_path = os.environ.get("AGENT_SQLITE_DB_PATH")
@@ -180,6 +180,17 @@ def ensure_sqlite_db(path: Optional[str] = None) -> Tuple[str, sqlite3.Connectio
     logger.debug("Ensuring SQLite database at %s", db_path)
     connection = sqlite3.connect(str(db_path), check_same_thread=False)
     return str(db_path), connection
+
+
+def setup_environment() -> str:
+    resolved_path = _resolve_path()
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("AGENT_SQLITE_DB_PATH", str(resolved_path))
+    logger.debug("Configured AGENT_SQLITE_DB_PATH=%s", resolved_path)
+    return str(resolved_path)
+
+
+setup_environment()
 """, encoding="utf-8")
 
     # child graph.py
@@ -202,6 +213,14 @@ except Exception as exc:  # pragma: no cover - handled via logging below
     _SQLITE_IMPORT_ERROR = exc
 else:
     _SQLITE_IMPORT_ERROR = None
+
+try:
+    from . import db_setup
+except Exception as exc:  # pragma: no cover - handled via logging below
+    db_setup = None  # type: ignore[assignment]
+    _DB_SETUP_IMPORT_ERROR = exc
+else:
+    _DB_SETUP_IMPORT_ERROR = None
 
 from .planner import plan_node
 from .executor import execute
@@ -239,10 +258,14 @@ def _make_graph(path: str | None = None):
             logger.warning("SqliteSaver is unavailable; using in-memory checkpoints.")
         return g.compile()
 
-    try:
-        from . import db_setup
-    except Exception as exc:
-        logger.warning("Failed to import agent.db_setup (%s); using in-memory checkpoints.", exc)
+    if db_setup is None:
+        if _DB_SETUP_IMPORT_ERROR:
+            logger.warning(
+                "Failed to import agent.db_setup (%s); using in-memory checkpoints.",
+                _DB_SETUP_IMPORT_ERROR,
+            )
+        else:
+            logger.warning("agent.db_setup unavailable; using in-memory checkpoints.")
         return g.compile()
 
     try:
