@@ -13,7 +13,7 @@ from asb.agent.hitl import review_plan
 from asb.agent.tests_node import test_agents
 from asb.agent.executor import execute_deep
 from asb.agent.scaffold import scaffold_project
-from asb.agent.sandbox import sandbox_smoke
+from asb.agent.sandbox import comprehensive_sandbox_test as sandbox_smoke
 from asb.agent.report import report
 
 print("### USING settings_v2 FROM:", s.__file__)
