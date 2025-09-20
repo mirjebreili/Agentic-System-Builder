@@ -30,7 +30,7 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # langgraph.json
     (base / "langgraph.json").write_text(
-        json.dumps({"graphs": {"agent": "agent.graph:graph"},
+        json.dumps({"graphs": {"agent": "src.agent.graph:graph"},
                     "dependencies": ["."], "env": "./.env"}, indent=2), encoding="utf-8")
 
     # pyproject.toml
@@ -48,6 +48,10 @@ dependencies = [
   "pytest>=7.0.0",
   "langgraph-cli[inmem]>=0.1.0",
   "requests>=2.25.0",
+  "black>=22.0.0",
+  "isort>=5.0.0",
+  "mypy>=1.0.0",
+  "bandit[toml]>=1.7.0",
 ]
 [build-system]
 requires = ["setuptools","wheel"]
@@ -284,7 +288,7 @@ graph = _make_graph()
 
     # tests
     (base / "tests" / "test_smoke.py").write_text("""def test_import_graph():
-    from agent.graph import graph
+    from src.agent.graph import graph
     assert graph is not None
 """, encoding="utf-8")
 

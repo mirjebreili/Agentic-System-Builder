@@ -28,6 +28,10 @@ UPDATED_DEPENDENCIES = [
     '  "pytest>=7.0.0",',
     '  "langgraph-cli[inmem]>=0.1.0",',
     '  "requests>=2.25.0",',
+    '  "black>=22.0.0",',
+    '  "isort>=5.0.0",',
+    '  "mypy>=1.0.0",',
+    '  "bandit[toml]>=1.7.0",',
 ]
 
 
@@ -68,7 +72,7 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert "from . import db_setup" in graph_contents
 
         langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
-        assert langgraph_config["graphs"]["agent"] == "agent.graph:graph"
+        assert langgraph_config["graphs"]["agent"] == "src.agent.graph:graph"
 
         db_setup_path = project_dir / "src" / "agent" / "db_setup.py"
         assert db_setup_path.exists()
@@ -86,7 +90,7 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
             assert (project_dir / package_file).exists()
 
         smoke_contents = (project_dir / "tests" / "test_smoke.py").read_text(encoding="utf-8")
-        assert "from agent.graph import graph" in smoke_contents
+        assert "from src.agent.graph import graph" in smoke_contents
 
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         for dependency in UPDATED_DEPENDENCIES:

@@ -1,6 +1,70 @@
+import importlib
 import json
+import sys
+import types
+from pathlib import Path
+
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+for path in (ROOT, SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
 from asb.llm.client import get_chat_model
+# Provide lightweight compatibility shims for legacy package names used in tests
+prompt2graph_pkg = types.ModuleType("prompt2graph")
+sys.modules.setdefault("prompt2graph", prompt2graph_pkg)
+
+prompt2graph_llm_pkg = types.ModuleType("prompt2graph.llm")
+sys.modules.setdefault("prompt2graph.llm", prompt2graph_llm_pkg)
+
+prompt2graph_llm = types.ModuleType("prompt2graph.llm.client")
+prompt2graph_llm.get_chat_model = get_chat_model
+sys.modules.setdefault("prompt2graph.llm.client", prompt2graph_llm)
+
+_STATIC_PLAN = {
+    "goal": "Test goal",
+    "nodes": [
+        {"id": "plan", "type": "llm", "prompt": "step 1"},
+        {"id": "do", "type": "llm", "prompt": "step 2"},
+        {"id": "finish", "type": "llm", "prompt": "step 3"},
+    ],
+    "edges": [
+        {"from": "plan", "to": "do"},
+        {"from": "do", "to": "do", "if": "more_steps"},
+        {"from": "do", "to": "finish", "if": "steps_done"},
+    ],
+    "confidence": 0.9,
+}
+
+def _static_plan_tot(state: dict) -> dict:
+    return {
+        "plan": json.loads(json.dumps(_STATIC_PLAN)),
+        "messages": list(state.get("messages", [])),
+        "flags": {"more_steps": True, "steps_done": False},
+    }
+
+prompt2graph_planner = types.ModuleType("prompt2graph.agent.planner")
+prompt2graph_planner.plan_tot = _static_plan_tot
+sys.modules.setdefault("prompt2graph.agent.planner", prompt2graph_planner)
+
+prompt2graph_agent_pkg = types.ModuleType("prompt2graph.agent")
+sys.modules.setdefault("prompt2graph.agent", prompt2graph_agent_pkg)
+
+src_pkg = types.ModuleType("src")
+sys.modules.setdefault("src", src_pkg)
+
+src_agent_pkg = types.ModuleType("src.agent")
+sys.modules.setdefault("src.agent", src_agent_pkg)
+setattr(src_pkg, "agent", src_agent_pkg)
+
+for module_name in ("executor", "planner"):
+    asb_module = importlib.import_module(f"asb.agent.{module_name}")
+    shim_name = f"src.agent.{module_name}"
+    sys.modules.setdefault(shim_name, asb_module)
+    setattr(src_agent_pkg, module_name, asb_module)
 
 class FakeResponse:
     def __init__(self, content: str):
@@ -10,22 +74,7 @@ class FakeChatModel:
     """Deterministic stand‑in for the real chat model."""
 
     def __init__(self):
-        self._plan_json = json.dumps(
-            {
-                "goal": "Test goal",
-                "nodes": [
-                    {"id": "plan", "type": "llm", "prompt": "step 1"},
-                    {"id": "do", "type": "llm", "prompt": "step 2"},
-                    {"id": "finish", "type": "llm", "prompt": "step 3"},
-                ],
-                "edges": [
-                    {"from": "plan", "to": "do"},
-                    {"from": "do", "to": "do", "if": "more_steps"},
-                    {"from": "do", "to": "finish", "if": "steps_done"},
-                ],
-                "confidence": 0.9
-            }
-        )
+        self._plan_json = json.dumps(_STATIC_PLAN)
 
     def invoke(self, messages, **kwargs):
         system_content = messages[0].content if messages else ""
@@ -47,4 +96,32 @@ def mock_chat_model(monkeypatch):
     monkeypatch.setattr("asb.llm.client.get_chat_model", lambda **kwargs: fake)
     monkeypatch.setattr("asb.agent.planner.get_chat_model", lambda **kwargs: fake)
     monkeypatch.setattr("asb.agent.executor.get_chat_model", lambda **kwargs: fake)
+    monkeypatch.setattr(
+        sys.modules["prompt2graph.llm.client"],
+        "get_chat_model",
+        lambda **kwargs: fake,
+        raising=False,
+    )
+
+    def _fake_prompt_plan(state: dict) -> dict:
+        plan_data = json.loads(fake._plan_json)
+        return {
+            "plan": plan_data,
+            "messages": list(state.get("messages", [])),
+            "flags": {"more_steps": True, "steps_done": False},
+        }
+
+    monkeypatch.setattr(
+        sys.modules["prompt2graph.agent.planner"],
+        "plan_tot",
+        _fake_prompt_plan,
+        raising=False,
+    )
+    if "tests.test_planner" in sys.modules:
+        monkeypatch.setattr(
+            sys.modules["tests.test_planner"],
+            "plan_tot",
+            _fake_prompt_plan,
+            raising=False,
+        )
     return fake
