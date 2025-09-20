@@ -4,21 +4,37 @@ from pathlib import Path
 from typing import Any, Dict
 
 def sandbox_smoke(state: Dict[str, Any]) -> Dict[str, Any]:
-    p = Path(state.get("scaffold", {}).get("path",""))
+    p = Path(state.get("scaffold", {}).get("path", ""))
     logp = p / "reports" / "run1.log"
     logp.parent.mkdir(parents=True, exist_ok=True)
     ok = False
     try:
-        code = "from src.agent.graph import graph; print('OK' if graph else 'NO')"
-        res = subprocess.run([sys.executable, "-c", code], cwd=p, capture_output=True, text=True)
-        logp.write_text(res.stdout + "\n" + res.stderr, encoding="utf-8")
-        ok = ("OK" in (res.stdout or ""))
-        if not ok:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], cwd=p, check=False)
-            res2 = subprocess.run([sys.executable, "-c", code], cwd=p, capture_output=True, text=True)
-            logp.write_text(res.stdout + "\n---RETRY---\n" + res2.stdout + "\n" + res2.stderr, encoding="utf-8")
-            ok = ("OK" in (res2.stdout or ""))
+        # Install dependencies first
+        install_cmd = [sys.executable, "-m", "pip", "install", "-e", ".", "langgraph-cli[inmem]"]
+        install_res = subprocess.run(install_cmd, cwd=p, capture_output=True, text=True, check=False)
+
+        # Write installation logs
+        log_content = f"--- Installation ---\n"
+        log_content += f"STDOUT:\n{install_res.stdout}\n"
+        log_content += f"STDERR:\n{install_res.stderr}\n"
+
+        if install_res.returncode == 0:
+            # Run tests using pytest
+            test_cmd = [sys.executable, "-m", "pytest"]
+            test_res = subprocess.run(test_cmd, cwd=p, capture_output=True, text=True)
+
+            log_content += f"\n--- Pytest ---\n"
+            log_content += f"STDOUT:\n{test_res.stdout}\n"
+            log_content += f"STDERR:\n{test_res.stderr}\n"
+
+            ok = test_res.returncode == 0
+        else:
+            log_content += "\n--- Installation failed ---"
+
+        logp.write_text(log_content, encoding="utf-8")
+
     except Exception as e:
-        logp.write_text(str(e), encoding="utf-8")
+        logp.write_text(f"An unexpected error occurred: {e}", encoding="utf-8")
+
     state["sandbox"] = {"ok": ok, "log_path": str(logp)}
     return state

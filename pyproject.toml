@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2,<9", "ruff>=0.5.6,<0.6"]
+dev = ["pytest>=8.2,<9", "ruff>=0.5.6,<0.6", "pytest-asyncio"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
