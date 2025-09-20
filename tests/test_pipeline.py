@@ -1,16 +1,28 @@
 from __future__ import annotations
+import asyncio
+
 import pytest
 from langgraph.graph import StateGraph, START, END
 from asb.agent.state import AppState
 from asb.agent.planner import plan_tot
 from asb.agent.scaffold import scaffold_project
 from asb.agent.sandbox import sandbox_smoke
+import asb.agent.sandbox as sandbox_module
 
-@pytest.mark.asyncio
-async def test_full_pipeline():
+def test_full_pipeline(monkeypatch):
     """
     Tests the full pipeline from prompt to sandbox-verified project.
     """
+    monkeypatch.setattr(
+        sandbox_module,
+        "_langgraph_dev_integration",
+        lambda project_root, log: {
+            "success": True,
+            "skipped": False,
+            "health_status": 200,
+            "execution_status": 200,
+        },
+    )
     # 1. Define the graph
     g = StateGraph(AppState)
     g.add_node("plan_tot", plan_tot)
@@ -28,7 +40,7 @@ async def test_full_pipeline():
     )
 
     # 3. Run the graph
-    final_state = await graph.ainvoke(initial_state)
+    final_state = asyncio.run(graph.ainvoke(initial_state))
 
     # 4. Assert the result
     assert final_state is not None

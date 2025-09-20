@@ -8,7 +8,6 @@ def test_get_chat_model_returns_fake_instance():
     # invoking without special system message should return plan JSON
     content = llm.invoke([]).content
     assert "Test goal" in content
-=======
 from src.agent.executor import execute_deep
 
 def test_executor_finishes():

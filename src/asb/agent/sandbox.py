@@ -183,6 +183,69 @@ def _cleanup_artifacts(project_root: Path, log: Any) -> None:
             log.write(f"  ! failed to remove {pycache}: {exc!r}\n")
 
 
+def _langgraph_dev_integration(project_root: Path, log: Any) -> Dict[str, Any]:
+    """Run a smoke test against ``langgraph dev`` for the generated project."""
+
+    cli_path = shutil.which("langgraph")
+    if not cli_path:
+        log.write("LangGraph CLI not found in PATH; skipping integration test.\n")
+        return {"success": False, "skipped": True, "reason": "langgraph cli missing"}
+
+    try:
+        import requests  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        log.write(f"requests import failed ({exc!r}); skipping integration test.\n")
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": f"requests import failed: {exc}",
+        }
+
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            [cli_path, "dev", "--port", "8888", "--no-browser"],
+            cwd=str(project_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(5)
+
+        health_resp = requests.get("http://localhost:8888/", timeout=10)
+        payload = {
+            "input": {"messages": [{"role": "user", "content": "ping"}]},
+            "config": {"configurable": {"thread_id": "sandbox-smoke"}},
+        }
+        exec_resp = requests.post(
+            "http://localhost:8888/threads/sandbox-smoke/runs",
+            json=payload,
+            timeout=20,
+        )
+
+        success = health_resp.status_code == 200 and exec_resp.status_code in {200, 201}
+        log.write(
+            "LangGraph integration test completed with "
+            f"health={health_resp.status_code}, exec={exec_resp.status_code}.\n"
+        )
+
+        return {
+            "success": success,
+            "skipped": False,
+            "health_status": health_resp.status_code,
+            "execution_status": exec_resp.status_code,
+        }
+    except Exception as exc:  # pragma: no cover - best effort logging
+        log.write(f"LangGraph integration test failed: {exc!r}\n")
+        return {"success": False, "skipped": False, "error": str(exc)}
+    finally:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
 def comprehensive_sandbox_test(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Execute the comprehensive sandbox validation workflow.
 
@@ -206,6 +269,8 @@ def comprehensive_sandbox_test(state: MutableMapping[str, Any]) -> MutableMappin
     phases = _default_phases()
     phase_results: List[PhaseResult] = []
     overall_ok = True
+
+    langgraph_results: Dict[str, Any] = {"success": False, "skipped": True, "reason": "not-run"}
 
     with log_path.open("w", encoding="utf-8") as log:
         log.write("=== Comprehensive Sandbox Test ===\n")
@@ -239,19 +304,25 @@ def comprehensive_sandbox_test(state: MutableMapping[str, Any]) -> MutableMappin
         log.write("\n--- Cleanup ---\n")
         _cleanup_artifacts(project_root, log)
 
+        log.write("\n--- LangGraph Integration ---\n")
+        langgraph_results = _langgraph_dev_integration(project_root, log)
+        log.write(json.dumps(langgraph_results, indent=2))
+        log.write("\n")
+
         log.write("\n=== Summary ===\n")
         summary = {
             "phases": [pr.to_dict() for pr in phase_results],
-            "overall_ok": overall_ok,
+            "overall_ok": overall_ok and (langgraph_results.get("success") or langgraph_results.get("skipped")),
         }
         log.write(json.dumps(summary, indent=2))
         log.write("\n")
         log.write(f"Finished: {datetime.utcnow().isoformat()}Z\n")
 
     state["sandbox"] = {
-        "ok": overall_ok,
+        "ok": overall_ok and (langgraph_results.get("success") or langgraph_results.get("skipped")),
         "log_path": str(log_path),
         "phases": [pr.to_dict() for pr in phase_results],
+        "langgraph_integration": langgraph_results,
     }
     return state
 
