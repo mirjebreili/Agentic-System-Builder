@@ -19,3 +19,20 @@ class AppState(TypedDict, total=False):
     scaffold: Dict[str, Any]
     sandbox: Dict[str, Any]
     report: Dict[str, Any]
+
+
+def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Add circuit breaker logic to prevent infinite loops"""
+
+    if "fix_attempts" not in state:
+        state["fix_attempts"] = 0
+
+    if "consecutive_failures" not in state:
+        state["consecutive_failures"] = 0
+
+    if "repair_start_time" not in state:
+        import time
+
+        state["repair_start_time"] = time.time()
+
+    return state
