@@ -39,6 +39,23 @@ _STATIC_PLAN = {
     "confidence": 0.9,
 }
 
+_STATIC_ARCHITECTURE = {
+    "graph_structure": [
+        {"id": "entry", "type": "input", "description": "Initial state"},
+        {"id": "analyze", "type": "llm", "description": "Review requirements"},
+        {"id": "design", "type": "llm", "description": "Outline architecture"},
+        {"id": "finish", "type": "output", "description": "Provide summary"},
+    ],
+    "state_flow": {
+        "requirements": "entry -> analyze",
+        "architecture": "design -> finish",
+    },
+    "conditional_edges": [
+        {"from": "design", "to": "finish", "condition": "design_complete"},
+    ],
+    "entry_exit_points": {"entry": ["entry"], "exit": ["finish"]},
+}
+
 def _static_plan_tot(state: dict) -> dict:
     return {
         "plan": json.loads(json.dumps(_STATIC_PLAN)),
@@ -60,7 +77,7 @@ src_agent_pkg = types.ModuleType("src.agent")
 sys.modules.setdefault("src.agent", src_agent_pkg)
 setattr(src_pkg, "agent", src_agent_pkg)
 
-for module_name in ("executor", "planner"):
+for module_name in ("executor", "planner", "architecture_designer"):
     asb_module = importlib.import_module(f"asb.agent.{module_name}")
     shim_name = f"src.agent.{module_name}"
     sys.modules.setdefault(shim_name, asb_module)
@@ -75,9 +92,13 @@ class FakeChatModel:
 
     def __init__(self):
         self._plan_json = json.dumps(_STATIC_PLAN)
+        self._architecture_json = json.dumps(_STATIC_ARCHITECTURE)
 
     def invoke(self, messages, **kwargs):
         system_content = messages[0].content if messages else ""
+        system_lower = system_content.lower()
+        if "architecture" in system_lower or "graph_structure" in system_lower:
+            return FakeResponse(self._architecture_json)
         if "score 0..1" in system_content.lower():
             return FakeResponse('{"score": 1.0, "reason": "looks good"}')
         if "json array of plan objects" in system_content.lower():
@@ -96,6 +117,7 @@ def mock_chat_model(monkeypatch):
     monkeypatch.setattr("asb.llm.client.get_chat_model", lambda **kwargs: fake)
     monkeypatch.setattr("asb.agent.planner.get_chat_model", lambda **kwargs: fake)
     monkeypatch.setattr("asb.agent.executor.get_chat_model", lambda **kwargs: fake)
+    monkeypatch.setattr("asb.agent.architecture_designer.get_chat_model", lambda **kwargs: fake)
     monkeypatch.setattr(
         sys.modules["prompt2graph.llm.client"],
         "get_chat_model",
