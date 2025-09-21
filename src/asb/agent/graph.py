@@ -38,6 +38,12 @@ def route_after_tests(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "execute_deep"
 
 def route_after_validation(state: Dict[str, Any]) -> str:
+    fix_attempts = state.get("fix_attempts", 0)
+
+    if fix_attempts >= 3:
+        print(f"🛑 CIRCUIT BREAKER: {fix_attempts} attempts reached - FORCING COMPLETION")
+        return "force_complete"
+
     return state.get("next_action", "complete")
 
 
