@@ -194,6 +194,7 @@ class CodeValidator:
 def code_validator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Code validator node for the ASB execution graph."""
 
+    fix_attempts = state.get("fix_attempts", 0) if isinstance(state, dict) else 0
     scaffold_info = state.get("scaffold", {}) if isinstance(state, dict) else {}
     project_path = Path(scaffold_info.get("path", ""))
     if not project_path.exists():
@@ -202,6 +203,9 @@ def code_validator_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "error": "Project path not found",
             "next_action": "regenerate",
         }
+        if fix_attempts >= 3:
+            state["next_action"] = "force_complete"
+            return state
         state["next_action"] = "fix_code"
         state["validation_errors"] = ["project path not found"]
         return state
@@ -210,5 +214,8 @@ def code_validator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     results = validator.validate_project(project_path)
     state["code_validation"] = results
     state["validation_errors"] = results.get("errors", [])
+    if fix_attempts >= 3:
+        state["next_action"] = "force_complete"
+        return state
     state["next_action"] = "complete" if results.get("overall_success") else "fix_code"
     return state
