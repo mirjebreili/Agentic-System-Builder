@@ -71,6 +71,7 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         {
             "complete": "sandbox_smoke",
             "fix_code": "code_fixer",
+            "force_complete": "sandbox_smoke",
         },
     )
     g.add_conditional_edges(
@@ -79,6 +80,7 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         {
             "validate_again": "code_validator",
             "manual_review": "report",
+            "force_complete": "sandbox_smoke",
         },
     )
     g.add_edge("sandbox_smoke", "report")

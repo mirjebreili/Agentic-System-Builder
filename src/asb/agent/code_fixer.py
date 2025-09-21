@@ -30,18 +30,41 @@ class FixStrategy:
 class CodeFixer:
     """Tree-of-Thought inspired fixer for generated projects."""
 
+    MAX_FIX_ATTEMPTS = 3
+
     def fix_project_issues(self, state: Dict[str, Any]) -> Dict[str, Any]:
         project_path = Path(state.get("scaffold", {}).get("path", ""))
         validation_results = state.get("code_validation", {})
 
-        strategies = self._generate_fix_strategies(validation_results)
-        evaluated = self._evaluate_strategies(strategies, project_path)
-        selected = self._select_best_strategy(evaluated)
-        fixes = self._apply_fixes(selected, project_path)
+        attempts = int(state.get("fix_attempts", 0)) + 1
+        state["fix_attempts"] = attempts
+
+        if attempts > self.MAX_FIX_ATTEMPTS:
+            fixes = {
+                "success": False,
+                "applied_fixes": [],
+                "errors": [
+                    "Exceeded automated fix attempts; forcing completion.",
+                ],
+            }
+            selected = None
+            state["next_action"] = "force_complete"
+        else:
+            strategies = self._generate_fix_strategies(validation_results)
+            evaluated = self._evaluate_strategies(strategies, project_path)
+            selected = self._select_best_strategy(evaluated)
+            fixes = self._apply_fixes(selected, project_path)
+
+            state["next_action"] = (
+                "validate_again" if fixes.get("success") else "manual_review"
+            )
 
         state["code_fixes"] = fixes
         state["fix_strategy_used"] = selected.name if selected else None
-        state["next_action"] = "validate_again" if fixes.get("success") else "manual_review"
+
+        if state.get("next_action") != "validate_again":
+            state.pop("fix_attempts", None)
+
         return state
 
     # ------------------------------------------------------------------
