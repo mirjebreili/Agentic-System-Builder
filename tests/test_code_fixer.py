@@ -66,7 +66,7 @@ def test_code_fixer_force_completes_after_repeated_attempts(tmp_path):
         },
     }
 
-    for attempt in range(CodeFixer.MAX_FIX_ATTEMPTS):
+    for attempt in range(CodeFixer.MAX_FIX_ATTEMPTS - 1):
         result = code_fixer_node(state)
         assert result["next_action"] == "validate_again"
         assert result.get("fix_attempts") == attempt + 1
@@ -74,5 +74,8 @@ def test_code_fixer_force_completes_after_repeated_attempts(tmp_path):
     final_result = code_fixer_node(state)
     assert final_result["next_action"] == "force_complete"
     assert not final_result["code_fixes"]["success"]
-    assert "Exceeded automated fix attempts" in final_result["code_fixes"]["errors"][0]
-    assert "fix_attempts" not in final_result
+    assert (
+        "Max fix attempts exceeded - forcing completion"
+        in final_result["code_fixes"]["errors"][0]
+    )
+    assert final_result["fix_attempts"] == CodeFixer.MAX_FIX_ATTEMPTS

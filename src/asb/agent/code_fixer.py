@@ -39,16 +39,22 @@ class CodeFixer:
         attempts = int(state.get("fix_attempts", 0)) + 1
         state["fix_attempts"] = attempts
 
-        if attempts > self.MAX_FIX_ATTEMPTS:
+        if attempts >= self.MAX_FIX_ATTEMPTS:
+            print(
+                f"🛑 CIRCUIT BREAKER: Max attempts ({attempts}) reached - FORCING COMPLETION"
+            )
             fixes = {
                 "success": False,
                 "applied_fixes": [],
                 "errors": [
-                    "Exceeded automated fix attempts; forcing completion.",
+                    "Max fix attempts exceeded - forcing completion",
                 ],
             }
             selected = None
             state["next_action"] = "force_complete"
+            state["code_fixes"] = fixes
+            state["fix_strategy_used"] = None
+            return state
         else:
             strategies = self._generate_fix_strategies(validation_results)
             evaluated = self._evaluate_strategies(strategies, project_path)
