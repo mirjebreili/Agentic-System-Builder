@@ -19,6 +19,7 @@ class AppState(TypedDict, total=False):
     scaffold: Dict[str, Any]
     sandbox: Dict[str, Any]
     report: Dict[str, Any]
+    requirements: Dict[str, Any]
 
 
 def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
