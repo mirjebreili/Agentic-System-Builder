@@ -4,6 +4,7 @@ from .architecture_designer import architecture_designer_node, design_architectu
 from .node_implementor import implement_single_node, node_implementor_node
 from .requirements_analyzer import analyze_requirements, requirements_analyzer_node
 from .state_generator import generate_state_schema, state_generator_node
+from .syntax_validator import syntax_validator_node, validate_syntax_only
 
 __all__ = [
     "analyze_requirements",
@@ -14,4 +15,6 @@ __all__ = [
     "node_implementor_node",
     "requirements_analyzer_node",
     "state_generator_node",
+    "syntax_validator_node",
+    "validate_syntax_only",
 ]
