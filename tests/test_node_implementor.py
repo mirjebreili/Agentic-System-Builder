@@ -1,7 +1,7 @@
 import types
 
 from asb.agent import node_implementor
-from asb.agent.node_implementor import _select_next_unimplemented_node
+from asb.agent.node_implementor import _build_prompts, _select_next_unimplemented_node
 
 
 def _base_state() -> dict:
@@ -154,3 +154,15 @@ def test_node_implementor_summarizes_all_nodes(monkeypatch):
     assert "- alpha (new code) -> alpha.py" in message
     assert "- beta (new code) -> beta.py" in message
     assert len(fake_model.invocations) == 2
+
+
+def test_build_prompts_includes_format_guidance_for_bullet_points():
+    state = _base_state()
+    state["messages"] = [
+        {"role": "user", "content": "Please describe the implementation in bullet points."}
+    ]
+
+    node = state["architecture"]["graph_structure"][0]
+    _, user_prompt = _build_prompts(node["id"], node, state)
+
+    assert "Format guidance: Use bullet points" in user_prompt
