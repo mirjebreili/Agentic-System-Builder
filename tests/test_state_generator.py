@@ -94,6 +94,13 @@ def test_state_template_embeds_expected_schema():
 def test_generate_state_schema_infers_types_from_state_flow():
     state = {
         "architecture": {
+            "plan": {
+                "nodes": [
+                    {"name": "Plan"},
+                    {"name": "Do"},
+                    {"name": "Finish"},
+                ]
+            },
             "state_flow": {
                 "requirements": "entry -> analyze",
                 "architecture": "design -> finish",
@@ -109,9 +116,12 @@ def test_generate_state_schema_infers_types_from_state_flow():
     generated = updated.get("generated_files", {}).get("state.py", "")
     fields = _parse_app_state_fields(generated)
 
-    for field, annotation in EXPECTED_APP_STATE_FIELDS.items():
+    for field, annotation in EXPECTED_TEMPLATE_FIELDS.items():
         assert fields[field] == annotation
 
+    assert fields["plan_result"] == "Dict[str, Any]"
+    assert fields["do_result"] == "Dict[str, Any]"
+    assert fields["finish_result"] == "Dict[str, Any]"
     assert fields["analysis_results"] == "Dict[str, Any]"
     assert fields["task_steps"] == "List[Any]"
     assert fields["is_ready"] == "bool"
@@ -120,7 +130,7 @@ def test_generate_state_schema_infers_types_from_state_flow():
 def test_generate_state_schema_defaults_to_expected_fields_when_sparse():
     generated = generate_state_schema({}).get("generated_files", {}).get("state.py", "")
     fields = _parse_app_state_fields(generated)
-    assert fields == EXPECTED_APP_STATE_FIELDS
+    assert fields == EXPECTED_TEMPLATE_FIELDS
 
 
 def test_state_generator_node_appends_summary_message():
