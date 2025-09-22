@@ -6,20 +6,23 @@ class ChatMessage(TypedDict, total=False):
     content: str
 
 class AppState(TypedDict, total=False):
-    messages: List[ChatMessage]
-    plan: Dict[str, Any]
-    flags: Dict[str, bool]
-    metrics: Dict[str, Any]
-    debug: Dict[str, Any]
-    tests: Dict[str, Any]
+    architecture: Dict[str, Any]
     artifacts: Dict[str, Any]
-    review: Dict[str, Any]
-    replan: bool
+    debug: Dict[str, Any]
+    flags: Dict[str, bool]
+    generated_files: Dict[str, str]
+    messages: List[ChatMessage]
+    metrics: Dict[str, Any]
     passed: bool
-    scaffold: Dict[str, Any]
-    sandbox: Dict[str, Any]
+    plan: Dict[str, Any]
+    replan: bool
     report: Dict[str, Any]
     requirements: Dict[str, Any]
+    review: Dict[str, Any]
+    sandbox: Dict[str, Any]
+    scaffold: Dict[str, Any]
+    syntax_validation: Dict[str, Any]
+    tests: Dict[str, Any]
 
 
 def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
