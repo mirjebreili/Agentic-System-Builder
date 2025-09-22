@@ -34,7 +34,7 @@ class CodeFixer:
 
     def fix_project_issues(self, state: Dict[str, Any]) -> Dict[str, Any]:
         project_path = Path(state.get("scaffold", {}).get("path", ""))
-        validation_results = state.get("code_validation", {})
+        validation_results = state.get("syntax_validation") or state.get("code_validation", {})
 
         attempts = int(state.get("fix_attempts", 0)) + 1
         state["fix_attempts"] = attempts
