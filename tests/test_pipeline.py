@@ -44,5 +44,8 @@ def test_full_pipeline(monkeypatch):
 
     # 4. Assert the result
     assert final_state is not None
+    assert "plan" in final_state
+    assert "scaffold" in final_state
+    assert final_state["scaffold"].get("ok") is True
     assert "sandbox" in final_state
     assert final_state["sandbox"].get("ok") is True, f"Sandbox failed. Log: {final_state['sandbox'].get('log_path')}"
