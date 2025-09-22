@@ -147,12 +147,14 @@ def _extract_node_id(node: Dict[str, Any]) -> str | None:
     return None
 
 
-def _collect_architecture_nodes(architecture: Dict[str, Any]) -> List[Tuple[str, str, List[str]]]:
+def _collect_architecture_nodes(
+    architecture: Dict[str, Any]
+) -> List[Tuple[str, str, List[str], Dict[str, Any]]]:
     nodes = architecture.get("graph_structure")
     if not nodes:
         return []
 
-    ordered_nodes: List[Tuple[str, str, List[str]]] = []
+    ordered_nodes: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
     seen: set[str] = set()
 
     iterable: Iterable[Any]
@@ -183,7 +185,15 @@ def _collect_architecture_nodes(architecture: Dict[str, Any]) -> List[Tuple[str,
 
         sanitized = _sanitize_identifier(node_id)
         hints = _candidate_call_hints(node_id, sanitized)
-        ordered_nodes.append((node_id, sanitized, hints))
+        metadata: Dict[str, Any]
+        if isinstance(node, dict):
+            metadata = dict(node)
+        else:
+            metadata = {}
+            if node is not None:
+                metadata["description"] = str(node)
+        metadata.setdefault("id", node_id)
+        ordered_nodes.append((node_id, sanitized, hints, metadata))
         seen.add(node_id)
 
     return ordered_nodes
@@ -468,6 +478,98 @@ def capture_tot_error(state: Dict[str, Any], node_id: str, error: Exception) -> 
 """
 
 
+def generate_generic_node_template(
+    node_name: str, node_purpose: str, user_goal: str
+) -> str:
+    sanitized = _sanitize_identifier(node_name)
+    node_label = node_name.strip() or sanitized
+    default_goal = (user_goal or "Complete the requested task.").strip() or "Complete the requested task."
+    default_purpose = (node_purpose or f"Carry out the {node_label} step.").strip()
+    purpose_literal = json.dumps(default_purpose)
+    goal_literal = json.dumps(default_goal)
+    label_literal = json.dumps(node_label)
+    result_key_literal = json.dumps(f"{sanitized}_result")
+
+    return f"""from __future__ import annotations
+
+from typing import Any, Dict
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Adaptive implementation for the '{node_label}' node.\"\"\"
+
+    llm = client.get_chat_model()
+    raw_goal = state.get(\"goal\") or (state.get(\"plan\") or {{}}).get(\"goal\") or {goal_literal}
+    goal = str(raw_goal).strip() or {goal_literal}
+    context_data: Dict[str, Any] = {{}}
+    for candidate in (
+        state.get(\"context\"),
+        (state.get(\"scaffold\") or {{}}).get(\"context\"),
+    ):
+        if isinstance(candidate, dict):
+            context_data.update(candidate)
+
+    context_lines = []
+    if goal:
+        context_lines.append(f\"Overall goal: {{goal}}\")
+    node_purpose = {purpose_literal}
+    if node_purpose:
+        context_lines.append(f\"Node purpose: {{node_purpose}}\")
+    if context_data:
+        context_lines.append(\"Shared context:\")
+        for key, value in context_data.items():
+            context_lines.append(f\"- {{key}}: {{value}}\")
+
+    messages = list(state.get(\"messages\") or [])
+    latest_input = ""
+    if messages:
+        last_message = messages[-1]
+        if isinstance(last_message, dict):
+            latest_input = str(last_message.get(\"content\") or "").strip()
+        else:
+            latest_input = str(getattr(last_message, \"content\", "") or "").strip()
+    if latest_input:
+        context_lines.append(f\"Latest user input: {{latest_input}}\")
+
+    context = "\\n".join(context_lines) or "No additional context available."
+
+    system_prompt = (
+        "You are a LangGraph node executing a focused step in a larger workflow. "
+        "Reason carefully about the provided context and respond with the best next action."
+    )
+    user_prompt = (
+        "Use the context to fulfill this node's responsibility.\\n"
+        f"{{context}}\\n"
+        "Return a concise update describing what you accomplished and any outputs users should see."
+    )
+
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+        )
+        content = getattr(response, \"content\", response)
+        result_text = content if isinstance(content, str) else str(content)
+
+        updated_state = dict(state)
+        updated_state.pop(\"error\", None)
+        messages.append({{"role": "assistant", "content": result_text, "node": {label_literal}}})
+        updated_state["messages"] = messages
+        updated_state[{result_key_literal}] = result_text
+        return updated_state
+    except Exception as exc:
+        failed_state = dict(state)
+        failed_state[\"error\"] = str(exc)
+        return failed_state
+"""
+
+
 def _normalize_tot_node_id(node_id: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", node_id.lower()).strip("_")
 
@@ -707,16 +809,17 @@ _TOT_RENDERERS = {
 
 def _write_node_modules(
     base: Path,
-    node_specs: List[Tuple[str, str, List[str]]],
+    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]],
     generated: Dict[str, str],
     missing_files: List[str],
+    user_goal: str,
 ) -> None:
     agent_dir = base / "src" / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
 
     tot_utils_prepared = False
 
-    for node_id, module_name, _ in node_specs:
+    for node_id, module_name, _, node_details in node_specs:
         filename = f"{module_name}.py"
         source = _get_generated_content(
             generated,
@@ -735,7 +838,36 @@ def _write_node_modules(
                     tot_utils_prepared = True
                 source = renderer(node_id, module_name)
             else:
-                source = _render_node_stub(node_id, module_name)
+                purpose = ""
+                node_info = node_details if isinstance(node_details, dict) else {}
+                if node_info:
+                    for key in (
+                        "purpose",
+                        "description",
+                        "objective",
+                        "summary",
+                        "details",
+                        "task",
+                        "responsibility",
+                        "prompt",
+                    ):
+                        value = node_info.get(key)
+                        if not value:
+                            continue
+                        if isinstance(value, (list, tuple)):
+                            candidate = " ".join(
+                                str(item).strip() for item in value if item
+                            ).strip()
+                        else:
+                            candidate = str(value).strip()
+                        if candidate:
+                            purpose = candidate
+                            break
+                source = generate_generic_node_template(
+                    node_id,
+                    purpose or f"Carry out the {node_id} step.",
+                    user_goal,
+                )
             missing_entry = str(destination)
             if missing_entry not in missing_files:
                 missing_files.append(missing_entry)
@@ -743,7 +875,9 @@ def _write_node_modules(
         destination.write_text(source, encoding="utf-8")
 
 
-def _render_executor_module(node_specs: List[Tuple[str, str, List[str]]]) -> str:
+def _render_executor_module(
+    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]]
+) -> str:
     lines: List[str] = [
         "# generated",
         "from __future__ import annotations",
@@ -756,7 +890,7 @@ def _render_executor_module(node_specs: List[Tuple[str, str, List[str]]]) -> str
         "_NODE_SPECS: List[Tuple[str, str, List[str]]] = [",
     ]
 
-    for node_id, module_name, hints in node_specs:
+    for node_id, module_name, hints, _ in node_specs:
         hint_repr = ", ".join(repr(hint) for hint in hints)
         lines.append(f"    ({node_id!r}, {module_name!r}, [{hint_repr}]),")
 
@@ -880,8 +1014,25 @@ def _render_graph_module() -> str:
     return "\n".join(lines) + "\n"
 
 def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
-    goal = (state.get("plan") or {}).get("goal", "agent_project")
-    name = _slug(goal)[:40]
+    plan_goal = (state.get("plan") or {}).get("goal")
+    goal = plan_goal or "agent_project"
+    name = _slug(str(goal))[:40]
+    user_goal = ""
+    for candidate in (
+        plan_goal,
+        state.get("goal"),
+        state.get("input_text"),
+        state.get("last_user_input"),
+        goal,
+    ):
+        if not candidate:
+            continue
+        candidate_text = str(candidate).strip()
+        if candidate_text:
+            user_goal = candidate_text
+            break
+    if not user_goal:
+        user_goal = "Complete the requested task."
     base = ROOT / "projects" / name
     base.mkdir(parents=True, exist_ok=True)
     (base / "prompts").mkdir(parents=True, exist_ok=True)
@@ -1064,7 +1215,13 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
     node_specs = _collect_architecture_nodes(architecture)
 
     if node_specs:
-        _write_node_modules(base, node_specs, normalized_generated, missing_files)
+        _write_node_modules(
+            base,
+            node_specs,
+            normalized_generated,
+            missing_files,
+            user_goal,
+        )
 
         executor_source = _get_generated_content(
             normalized_generated,
