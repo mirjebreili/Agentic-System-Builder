@@ -10,8 +10,10 @@ from asb.agent.state import AppState
 from asb.agent.planner import plan_tot
 from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
-from asb.agent.tests_node import test_agents
-from asb.agent.executor import execute_deep
+from asb.agent.requirements_analyzer import requirements_analyzer_node
+from asb.agent.architecture_designer import architecture_designer_node
+from asb.agent.state_generator import state_generator_node
+from asb.agent.node_implementor import node_implementor_node
 from asb.agent.scaffold import scaffold_project
 from asb.agent.syntax_validator import syntax_validator_node
 from asb.agent.code_fixer import code_fixer_node
@@ -32,10 +34,7 @@ def running_on_langgraph_api() -> bool:
 
 
 def route_after_review(state: Dict[str, Any]) -> str:
-    return "plan_tot" if state.get("replan") else "test_agents"
-
-def route_after_tests(state: Dict[str, Any]) -> str:
-    return "plan_tot" if state.get("replan") else "execute_deep"
+    return "plan_tot" if state.get("replan") else "requirements_analyzer"
 
 def route_after_validation(state: Dict[str, Any]) -> str:
     fix_attempts = state.get("fix_attempts", 0)
@@ -63,8 +62,10 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
     g.add_node("review_plan", review_plan)  # HITL interrupt; node re-executes after resume
-    g.add_node("test_agents", test_agents)
-    g.add_node("execute_deep", execute_deep)
+    g.add_node("requirements_analyzer", requirements_analyzer_node)
+    g.add_node("architecture_designer", architecture_designer_node)
+    g.add_node("state_generator", state_generator_node)
+    g.add_node("node_implementor", node_implementor_node)
     g.add_node("scaffold_project", scaffold_project)
     g.add_node("syntax_validator", syntax_validator_node)
     g.add_node("code_fixer", code_fixer_node)
@@ -74,19 +75,25 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_edge(START, "plan_tot")
     g.add_edge("plan_tot", "confidence")
     g.add_edge("confidence", "review_plan")
-    g.add_conditional_edges("review_plan", route_after_review, {"plan_tot":"plan_tot","test_agents":"test_agents"})
-    g.add_conditional_edges("test_agents", route_after_tests, {"plan_tot":"plan_tot","execute_deep":"execute_deep"})
-    g.add_edge("execute_deep", "scaffold_project")
-    g.add_edge("scaffold_project", "syntax_validator")
+    g.add_conditional_edges(
+        "review_plan",
+        route_after_review,
+        {"plan_tot": "plan_tot", "requirements_analyzer": "requirements_analyzer"},
+    )
+    g.add_edge("requirements_analyzer", "architecture_designer")
+    g.add_edge("architecture_designer", "state_generator")
+    g.add_edge("state_generator", "node_implementor")
+    g.add_edge("node_implementor", "syntax_validator")
     g.add_conditional_edges(
         "syntax_validator",
         route_after_validation,
         {
-            "complete": "sandbox_smoke",
+            "complete": "scaffold_project",
             "fix_code": "code_fixer",
-            "force_complete": "sandbox_smoke",
+            "force_complete": "scaffold_project",
         },
     )
+    g.add_edge("scaffold_project", "sandbox_smoke")
     g.add_conditional_edges(
         "code_fixer",
         route_after_fixer,
