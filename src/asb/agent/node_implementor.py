@@ -18,6 +18,95 @@ _DEFAULT_STUB_TEMPLATE = (
 )
 
 
+def personalize_prompts(state: Dict[str, Any], node: Dict[str, Any]) -> Dict[str, Any]:
+    messages = list(state.get("messages") or [])
+
+    latest_user_content: str | None = None
+    for message in reversed(messages):
+        role = None
+        content = None
+        if isinstance(message, dict):
+            role = message.get("role")
+            content = message.get("content")
+        else:
+            role = getattr(message, "type", None) or getattr(message, "role", None)
+            content = getattr(message, "content", None)
+            if content is None and isinstance(message, str):
+                content = message
+        if content is None:
+            continue
+        content_text = str(content).strip()
+        if not content_text:
+            continue
+        normalized_role = (str(role).lower() if role else "")
+        if not normalized_role and hasattr(message, "__class__"):
+            class_name = message.__class__.__name__.lower()
+            if "human" in class_name or "user" in class_name:
+                normalized_role = "user"
+        if normalized_role in {"user", "human"}:
+            latest_user_content = content_text
+            break
+        if latest_user_content is None:
+            latest_user_content = content_text
+
+    plan_goal = None
+    plan = state.get("plan")
+    if isinstance(plan, dict):
+        plan_goal = plan.get("goal")
+
+    user_goal = (latest_user_content or plan_goal or "").strip()
+
+    normalized_content = latest_user_content.lower() if latest_user_content else ""
+    task_type = None
+    format_hint = ""
+    if any(keyword in normalized_content for keyword in ["bullet point", "bullet-point", "bulletpoint", "bullet list", "bulleted"]):
+        task_type = "bullet_points"
+        format_hint = (
+            "Use bullet points (for example, '- item') in any explanatory text or comments so the user receives bullet points."
+        )
+    elif "headline" in normalized_content:
+        task_type = "headline"
+        format_hint = "Add a concise headline-style comment summarizing the implementation."
+    elif "summary" in normalized_content:
+        task_type = "summary"
+        format_hint = "Include a short summary comment (2-3 sentences) explaining the implementation."
+
+    goal_phrase = user_goal or "the requested LangGraph node"
+    workflow_steps = [
+        f"Generate candidate implementations that address {goal_phrase}.",
+        "Evaluate the candidates for correctness, maintainability, and compatibility with the LangGraph architecture.",
+        "Select the strongest candidate before finalizing the code.",
+    ]
+    final_instruction = "Final answer: deliver the selected implementation as polished Python code."
+    if format_hint:
+        final_instruction = (
+            "Final answer: deliver the selected implementation as polished Python code while honoring this format guidance: "
+            + format_hint
+        )
+    workflow_steps.append(final_instruction)
+
+    system_fragment = "Workflow:\n" + "\n".join(
+        f"{index + 1}. {line}" for index, line in enumerate(workflow_steps)
+    )
+
+    user_lines = []
+    if user_goal:
+        user_lines.append(f"User goal/context: {user_goal}")
+    if format_hint:
+        user_lines.append(f"Format guidance: {format_hint}")
+    user_lines.append("Task steps:")
+    user_lines.extend(f"{index + 1}. {line}" for index, line in enumerate(workflow_steps))
+    user_fragment = "\n".join(user_lines)
+
+    return {
+        "user_goal": user_goal,
+        "task_type": task_type,
+        "format_hint": format_hint,
+        "system_fragment": system_fragment,
+        "user_fragment": user_fragment,
+    }
+
+
 def _iter_graph_nodes(state: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     architecture = state.get("architecture") or {}
     nodes = architecture.get("graph_structure") or []
@@ -88,10 +177,16 @@ def _build_prompts(node_id: str, node: Dict[str, Any], state: Dict[str, Any]) ->
         if edge.get("from") == node_id or edge.get("to") == node_id:
             relevant_edges.append(edge)
 
-    system_prompt = (
-        "You implement Python LangGraph nodes.\n"
-        "Return concise, production-quality code for the requested node only."
-    )
+    personalization = personalize_prompts(state, node)
+
+    system_lines = [
+        "You implement Python LangGraph nodes.",
+        "Return concise, production-quality code for the requested node only.",
+    ]
+    system_fragment = personalization.get("system_fragment")
+    if system_fragment:
+        system_lines.extend(["", system_fragment])
+    system_prompt = "\n".join(system_lines)
 
     details = [
         f"Node id: {node_id}",
@@ -111,11 +206,23 @@ def _build_prompts(node_id: str, node: Dict[str, Any], state: Dict[str, Any]) ->
             )
         details.append("Conditional edges:\n" + "\n".join(edges_lines))
 
-    user_prompt = (
-        "Implement the LangGraph node using a function or class as appropriate.\n"
-        + "\n".join(details)
-        + "\nReturn only Python code in a single code block."
-    )
+    user_lines = [
+        "Implement the LangGraph node using a function or class as appropriate.",
+        "",
+    ]
+    user_lines.extend(details)
+    user_fragment = personalization.get("user_fragment")
+    if user_fragment:
+        user_lines.extend(["", user_fragment])
+    final_instruction = "Return only Python code in a single code block."
+    format_hint = personalization.get("format_hint")
+    if format_hint:
+        final_instruction = (
+            final_instruction
+            + " If you need to include explanatory text, follow the format guidance above."
+        )
+    user_lines.extend(["", final_instruction])
+    user_prompt = "\n".join(line for line in user_lines if line is not None)
     return system_prompt, user_prompt
 
 
