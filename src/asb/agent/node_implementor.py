@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -141,41 +141,65 @@ def _render_stub(node_id: str, node_type: str) -> str:
 
 
 def implement_single_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    node_id, node = _select_next_unimplemented_node(state)
     previous_files = state.get("generated_files") or {}
 
     updated_state = dict(state)
-    updated_state["generated_files"] = dict(previous_files)
+    generated_files = dict(previous_files)
+    updated_state["generated_files"] = generated_files
+    updated_state["implemented_nodes"] = []
     updated_state["last_implemented_node"] = None
 
-    if not node_id or node is None:
-        logger.info("No remaining nodes to implement.")
-        return updated_state
+    implemented_nodes: List[Dict[str, Any]] = []
+    llm = None
 
-    node_type = node.get("type", "unspecified")
-    system_prompt, user_prompt = _build_prompts(node_id, node, state)
+    while True:
+        node_id, node = _select_next_unimplemented_node(updated_state)
+        if not node_id or node is None:
+            if not implemented_nodes:
+                logger.info("No remaining nodes to implement.")
+            break
 
-    llm = get_chat_model()
-    try:
-        response = llm.invoke([
-            SystemMessage(system_prompt),
-            HumanMessage(user_prompt),
-        ]).content
-    except Exception:
-        logger.exception("LLM call failed while implementing node %s.", node_id)
-        response = None
+        node_type = node.get("type", "unspecified")
+        system_prompt, user_prompt = _build_prompts(node_id, node, updated_state)
 
-    code = _extract_python_block(response or "")
-    if not code:
-        logger.warning("No code extracted for node %s; using stub.", node_id)
-        code = _render_stub(node_id, node_type)
-    else:
-        logger.debug("Generated code for node %s: %s", node_id, code[:2000])
+        if llm is None:
+            llm = get_chat_model()
 
-    sanitized_id = node.get("_sanitized_id") if node else None
-    filename = _node_filename(sanitized_id or node_id)
-    updated_state["generated_files"][filename] = code
-    updated_state["last_implemented_node"] = node_id
+        try:
+            response = llm.invoke([
+                SystemMessage(system_prompt),
+                HumanMessage(user_prompt),
+            ]).content
+        except Exception:
+            logger.exception("LLM call failed while implementing node %s.", node_id)
+            response = None
+
+        code = _extract_python_block(response or "")
+        if not code:
+            logger.warning("No code extracted for node %s; using stub.", node_id)
+            code = _render_stub(node_id, node_type)
+        else:
+            logger.debug("Generated code for node %s: %s", node_id, code[:2000])
+
+        sanitized_id = node.get("_sanitized_id") if node else None
+        filename = _node_filename(sanitized_id or node_id)
+        previous_code = previous_files.get(filename)
+        generated_files[filename] = code
+
+        implemented_nodes.append(
+            {
+                "node_id": node_id,
+                "filename": filename,
+                "new_code": previous_code != code,
+            }
+        )
+
+        updated_state["last_implemented_node"] = node_id
+
+    if not implemented_nodes:
+        updated_state["generated_files"] = previous_files
+
+    updated_state["implemented_nodes"] = implemented_nodes
     return updated_state
 
 
@@ -185,16 +209,20 @@ def node_implementor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         updated_state = implement_single_node(state)
-        new_files = updated_state.get("generated_files") or {}
-        last_node = updated_state.get("last_implemented_node")
+        implemented_nodes = updated_state.get("implemented_nodes") or []
 
-        if last_node:
-            filename = _node_filename(last_node)
-            previous_code = previous_files.get(filename)
-            new_code = new_files.get(filename)
-            produced = new_code is not None and new_code != previous_code
-            status = "new code" if produced else "no new code"
-            summary = f"[node-implementor]\nImplemented node {last_node} ({status})."
+        produced_any = any(node_info.get("new_code") for node_info in implemented_nodes)
+        if not produced_any:
+            updated_state["generated_files"] = previous_files
+
+        if implemented_nodes:
+            summary_lines = ["[node-implementor]", "Implemented nodes:"]
+            for node_info in implemented_nodes:
+                node_id = node_info.get("node_id", "unknown")
+                filename = node_info.get("filename", "unknown")
+                status = "new code" if node_info.get("new_code") else "no new code"
+                summary_lines.append(f"- {node_id} ({status}) -> {filename}")
+            summary = "\n".join(summary_lines)
         else:
             summary = "[node-implementor]\nNo nodes remaining to implement."
 
