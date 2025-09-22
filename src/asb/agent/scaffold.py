@@ -3,6 +3,57 @@ import json, os, re, shutil
 from pathlib import Path
 from typing import Any, Dict
 
+
+STATE_TEMPLATE = """from __future__ import annotations
+
+from typing import Annotated, Any, Dict, List, Literal, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
+
+
+class ChatMessage(TypedDict, total=False):
+    role: Literal[\"human\", \"user\", \"assistant\", \"system\", \"tool\"]
+    content: str
+
+
+class AppState(TypedDict, total=False):
+    architecture: Dict[str, Any]
+    artifacts: Dict[str, Any]
+    debug: Dict[str, Any]
+    flags: Dict[str, bool]
+    generated_files: Dict[str, str]
+    messages: Annotated[List[AnyMessage], add_messages]
+    metrics: Dict[str, Any]
+    passed: bool
+    plan: Dict[str, Any]
+    replan: bool
+    report: Dict[str, Any]
+    requirements: Dict[str, Any]
+    review: Dict[str, Any]
+    sandbox: Dict[str, Any]
+    scaffold: Dict[str, Any]
+    syntax_validation: Dict[str, Any]
+    tests: Dict[str, Any]
+
+
+def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Add circuit breaker logic to prevent infinite loops\"\"\"
+
+    if \"fix_attempts\" not in state:
+        state[\"fix_attempts\"] = 0
+
+    if \"consecutive_failures\" not in state:
+        state[\"consecutive_failures\"] = 0
+
+    if \"repair_start_time\" not in state:
+        import time
+
+        state[\"repair_start_time\"] = time.time()
+
+    return state
+"""
+
 # repository root
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -88,12 +139,7 @@ where = ["src"]
     if generated_state:
         state_path.write_text(generated_state, encoding="utf-8")
     else:
-        src_path = ROOT / "src" / "asb" / "agent" / "state.py"
-        if src_path.exists():
-            shutil.copy(src_path, state_path)
-        else:
-            missing_files.append(str(src_path))
-            print(f"Template file missing, skipping: {src_path}")
+        state_path.write_text(STATE_TEMPLATE, encoding="utf-8")
 
     # imports are already correct in copied files
 
