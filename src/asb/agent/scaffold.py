@@ -259,81 +259,24 @@ def execute(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": str(e), "messages": list(state.get("messages") or [])}
 """, encoding="utf-8")
 
-    # child db_setup.py
-    (base / "src/agent/db_setup.py").write_text("""# generated
-from __future__ import annotations
-
-import logging
-import os
-import sqlite3
-from pathlib import Path
-from typing import Optional, Tuple
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_DB_FILENAME = "state.db"
-DEFAULT_DB_DIR = Path(os.environ.get("AGENT_SQLITE_DIR", ".agent"))
-
-
-def _resolve_path(path: Optional[str] = None) -> Path:
-    if path:
-        return Path(path)
-    env_path = os.environ.get("AGENT_SQLITE_DB_PATH")
-    if env_path:
-        return Path(env_path)
-    return DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
-
-
-def ensure_sqlite_db(path: Optional[str] = None) -> Tuple[str, sqlite3.Connection]:
-    db_path = _resolve_path(path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.debug("Ensuring SQLite database at %s", db_path)
-    connection = sqlite3.connect(str(db_path), check_same_thread=False)
-    return str(db_path), connection
-
-
-def setup_environment() -> str:
-    resolved_path = _resolve_path()
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("AGENT_SQLITE_DB_PATH", str(resolved_path))
-    logger.debug("Configured AGENT_SQLITE_DB_PATH=%s", resolved_path)
-    return str(resolved_path)
-
-
-setup_environment()
-""", encoding="utf-8")
-
     # child graph.py
     (base / "src/agent/graph.py").write_text("""# generated
 from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import sys  # required for runtime argv detection
-from typing import Dict, Any
+from typing import Any, Dict
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import StateGraph, START, END
 
-logger = logging.getLogger(__name__)
-
-try:
-    from langgraph.checkpoint.sqlite import SqliteSaver
-except Exception as exc:  # pragma: no cover - handled via logging below
-    SqliteSaver = None  # type: ignore[assignment]
-    _SQLITE_IMPORT_ERROR = exc
-else:
-    _SQLITE_IMPORT_ERROR = None
-
-try:
-    from . import db_setup
-except Exception as exc:  # pragma: no cover - handled via logging below
-    db_setup = None  # type: ignore[assignment]
-    _DB_SETUP_IMPORT_ERROR = exc
-else:
-    _DB_SETUP_IMPORT_ERROR = None
-
+from .state import AppState
 from .planner import plan_node
 from .executor import execute
+
+logger = logging.getLogger(__name__)
 
 
 def running_on_langgraph_api() -> bool:
@@ -347,7 +290,7 @@ def running_on_langgraph_api() -> bool:
 
 
 def _make_graph(path: str | None = None):
-    g = StateGraph(dict)
+    g = StateGraph(AppState)
     g.add_node("plan", plan_node)
     g.add_node("execute", execute)
     g.add_edge(START, "plan")
@@ -358,35 +301,15 @@ def _make_graph(path: str | None = None):
         logger.info("LangGraph API runtime detected; compiling without a checkpointer.")
         return g.compile(checkpointer=None)
 
-    if SqliteSaver is None:
-        if _SQLITE_IMPORT_ERROR:
-            logger.warning(
-                "langgraph.checkpoint.sqlite unavailable (%s); using in-memory checkpoints.",
-                _SQLITE_IMPORT_ERROR,
-            )
-        else:
-            logger.warning("SqliteSaver is unavailable; using in-memory checkpoints.")
-        return g.compile()
+    checkpointer = None
+    if path:
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        connection = sqlite3.connect(path, check_same_thread=False)
+        checkpointer = SqliteSaver(connection)
 
-    if db_setup is None:
-        if _DB_SETUP_IMPORT_ERROR:
-            logger.warning(
-                "Failed to import agent.db_setup (%s); using in-memory checkpoints.",
-                _DB_SETUP_IMPORT_ERROR,
-            )
-        else:
-            logger.warning("agent.db_setup unavailable; using in-memory checkpoints.")
-        return g.compile()
-
-    try:
-        resolved_path, connection = db_setup.ensure_sqlite_db(path)
-    except Exception as exc:
-        logger.warning("SQLite setup failed (%s); using in-memory checkpoints.", exc)
-        return g.compile()
-
-    logger.debug("Using SQLite checkpointer at %s", resolved_path)
-    memory = SqliteSaver(connection)
-    return g.compile(checkpointer=memory)
+    return g.compile(checkpointer=checkpointer)
 
 
 graph = _make_graph()
