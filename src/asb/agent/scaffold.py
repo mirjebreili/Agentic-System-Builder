@@ -316,10 +316,62 @@ graph = _make_graph()
 """, encoding="utf-8")
 
     # tests
-    (base / "tests" / "test_smoke.py").write_text("""def test_import_graph():
-    from src.agent.graph import graph
-    assert graph is not None
-""", encoding="utf-8")
+    (base / "tests" / "test_smoke.py").write_text(
+        '''"""Smoke tests for the generated agent project."""
+
+import importlib
+from pathlib import Path
+
+import pytest
+
+
+def test_import_graph():
+    module = importlib.import_module("src.agent.graph")
+    assert hasattr(module, "graph")
+    assert module.graph is not None
+
+
+def test_state_structure():
+    state_module = importlib.import_module("src.agent.state")
+    assert hasattr(state_module, "AppState")
+    state_keys = set(getattr(state_module, "AppState").__annotations__)
+    expected_keys = {
+        "architecture",
+        "artifacts",
+        "debug",
+        "flags",
+        "generated_files",
+        "messages",
+        "metrics",
+        "passed",
+        "plan",
+        "replan",
+        "report",
+        "requirements",
+        "review",
+        "sandbox",
+        "scaffold",
+        "syntax_validation",
+        "tests",
+    }
+    assert expected_keys.issubset(state_keys)
+
+
+def test_graph_execution(tmp_path: Path):
+    from src.agent.graph import _make_graph
+
+    checkpoint_path = tmp_path / "checkpoints" / "graph.db"
+    graph = _make_graph(str(checkpoint_path))
+    result = graph.invoke({"messages": []})
+    assert isinstance(result, dict)
+    assert "messages" in result
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
+''',
+        encoding="utf-8",
+    )
 
     # README
     (base / "README.md").write_text(f"""# {name}
