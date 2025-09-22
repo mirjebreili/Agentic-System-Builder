@@ -84,7 +84,14 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
             assert (project_dir / package_file).exists()
 
         smoke_contents = (project_dir / "tests" / "test_smoke.py").read_text(encoding="utf-8")
-        assert "from src.agent.graph import graph" in smoke_contents
+        assert '"""Smoke tests for the generated agent project."""' in smoke_contents
+        assert "import importlib" in smoke_contents
+        assert "from pathlib import Path" in smoke_contents
+        assert "def test_import_graph():" in smoke_contents
+        assert "def test_state_structure():" in smoke_contents
+        assert "def test_graph_execution(tmp_path: Path):" in smoke_contents
+        assert 'if __name__ == "__main__":' in smoke_contents
+        assert "pytest.main([__file__])" in smoke_contents
 
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         for dependency in UPDATED_DEPENDENCIES:
