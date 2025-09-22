@@ -16,7 +16,7 @@ TEMPLATE_FILES = {
     "src/asb/agent/prompts_util.py": (
         "from pathlib import Path\n\n"
         "def find_prompts_dir() -> Path:\n"
-        "    return Path(__file__).parent\n"
+        "    return Path(__file__).resolve().parents[2] / \"prompts\"\n"
     ),
 }
 
@@ -92,6 +92,8 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert "def test_import_graph():" in smoke_contents
         assert "def test_state_structure():" in smoke_contents
         assert "def test_graph_execution(tmp_path: Path):" in smoke_contents
+        assert 'assert isinstance(result["messages"], list)' in smoke_contents
+        assert 'assert any(' in smoke_contents
         assert 'if __name__ == "__main__":' in smoke_contents
         assert "pytest.main([__file__])" in smoke_contents
 

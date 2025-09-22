@@ -1221,6 +1221,10 @@ def test_graph_execution(tmp_path: Path):
     )
     assert isinstance(result, dict)
     assert "messages" in result
+    assert isinstance(result["messages"], list)
+    assert any(
+        key in result for key in ("plan", "current_step", "scaffold", "report")
+    )
 
 
 if __name__ == "__main__":
