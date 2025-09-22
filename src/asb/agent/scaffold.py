@@ -69,7 +69,6 @@ where = ["src"]
     files = {
         "src/config/settings.py": "src/config/settings.py",
         "src/asb/llm/client.py": "src/llm/client.py",
-        "src/asb/agent/state.py": "src/agent/state.py",
         "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
     }
     missing_files = []
@@ -79,6 +78,19 @@ where = ["src"]
         src_path = ROOT / src_rel
         if src_path.exists():
             shutil.copy(src_path, dst)
+        else:
+            missing_files.append(str(src_path))
+            print(f"Template file missing, skipping: {src_path}")
+
+    generated_state = (state.get("generated_files") or {}).get("state.py")
+    state_path = base / "src" / "agent" / "state.py"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if generated_state:
+        state_path.write_text(generated_state, encoding="utf-8")
+    else:
+        src_path = ROOT / "src" / "asb" / "agent" / "state.py"
+        if src_path.exists():
+            shutil.copy(src_path, state_path)
         else:
             missing_files.append(str(src_path))
             print(f"Template file missing, skipping: {src_path}")

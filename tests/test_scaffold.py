@@ -98,3 +98,24 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
     finally:
         if project_dir.exists():
             shutil.rmtree(project_dir)
+
+
+def test_scaffold_project_prefers_generated_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    generated_state = "from __future__ import annotations\nSTATE_DEFINED = True\n"
+    state = {
+        "plan": {"goal": "Generated Agent"},
+        "generated_files": {"state.py": generated_state},
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        state_path = project_dir / "src" / "agent" / "state.py"
+        assert state_path.read_text(encoding="utf-8") == generated_state
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
