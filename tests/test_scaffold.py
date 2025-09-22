@@ -69,17 +69,11 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
 
         graph_contents = (project_dir / "src" / "agent" / "graph.py").read_text(encoding="utf-8")
         assert "from langgraph.checkpoint.sqlite import SqliteSaver" in graph_contents
-        assert "from . import db_setup" in graph_contents
+        assert "from .state import AppState" in graph_contents
+        assert "StateGraph(AppState)" in graph_contents
 
         langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
         assert langgraph_config["graphs"]["agent"] == "src.agent.graph:graph"
-
-        db_setup_path = project_dir / "src" / "agent" / "db_setup.py"
-        assert db_setup_path.exists()
-        db_setup_contents = db_setup_path.read_text(encoding="utf-8")
-        assert "def ensure_sqlite_db" in db_setup_contents
-        assert "def setup_environment" in db_setup_contents
-        assert "setup_environment()" in db_setup_contents
 
         for package_file in (
             "src/__init__.py",
