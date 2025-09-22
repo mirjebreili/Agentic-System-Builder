@@ -246,3 +246,58 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
     finally:
         if project_dir.exists():
             shutil.rmtree(project_dir)
+
+
+def test_scaffold_project_generates_tot_templates(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    architecture = {
+        "graph_structure": [
+            {"id": "generate_thoughts"},
+            {"id": "evaluate_thoughts"},
+            {"id": "select_best_thought"},
+            {"id": "final_answer"},
+        ]
+    }
+
+    state = {
+        "plan": {"goal": "Tree of Thoughts Agent"},
+        "architecture": architecture,
+        "generated_files": {},
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        agent_dir = project_dir / "src" / "agent"
+        utils_path = agent_dir / "utils.py"
+        utils_text = utils_path.read_text(encoding="utf-8")
+        assert "def extract_input_text" in utils_text
+        assert "def parse_approaches" in utils_text
+        assert "def score_thoughts" in utils_text
+        assert "def capture_tot_error" in utils_text
+
+        generate_text = (agent_dir / "generate_thoughts.py").read_text(encoding="utf-8")
+        assert "from ..llm import client" in generate_text
+        assert "client.get_chat_model()" in generate_text
+        assert "parse_approaches" in generate_text
+        assert "capture_tot_error" in generate_text
+
+        evaluate_text = (agent_dir / "evaluate_thoughts.py").read_text(encoding="utf-8")
+        assert "score_thoughts" in evaluate_text
+        assert "get_thoughts" in evaluate_text
+        assert "client.get_chat_model()" in evaluate_text
+
+        select_text = (agent_dir / "select_best_thought.py").read_text(encoding="utf-8")
+        assert "select_top_evaluation" in select_text
+        assert "capture_tot_error" in select_text
+
+        final_text = (agent_dir / "final_answer.py").read_text(encoding="utf-8")
+        assert "client.get_chat_model()" in final_text
+        assert "get_selected_thought" in final_text
+        assert "update_tot_state" in final_text
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
