@@ -150,38 +150,86 @@ where = ["src"]
 
     # child planner.py
     (base / "src/agent/planner.py").write_text("""# generated
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from langchain_core.messages import HumanMessage
-from llm.client import get_chat_model
+
 from .prompts_util import find_prompts_dir
 
+
 class PlanNode(BaseModel):
-    id: str; type: str; prompt: Optional[str] = None; tool: Optional[str] = None
+    id: str
+    type: str
+    prompt: Optional[str] = None
+    tool: Optional[str] = None
+
+
 class PlanEdge(BaseModel):
-    from_: str = Field(..., alias="from"); to: str; if_: Optional[str] = Field(None, alias="if")
+    from_: str = Field(..., alias="from")
+    to: str
+    if_: Optional[str] = Field(None, alias="if")
+
+
 class Plan(BaseModel):
-    goal: str; nodes: List[PlanNode]; edges: List[PlanEdge]; confidence: Optional[float] = None
+    goal: str
+    nodes: List[PlanNode]
+    edges: List[PlanEdge]
+    confidence: Optional[float] = None
+
 
 PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
-USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
+USER_TEMPLATE = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
+
+
+def _render_user_prompt(goal: str) -> str:
+    return USER_TEMPLATE.replace("{{ user_goal }}", goal)
+
+
+def _resolve_goal(state: Dict[str, Any]) -> str:
+    messages = state.get("messages") or []
+    for message in reversed(messages):
+        content = getattr(message, "content", None)
+        if isinstance(message, dict):
+            content = message.get("content") or content
+        if content:
+            return str(content)
+    input_text = state.get("input_text")
+    if input_text:
+        return str(input_text)
+    return "Plan a simple workflow."
+
 
 def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        llm = get_chat_model()
-        goal = (state.get("messages") or [{}])[-1].get("content","Goal")
-        user_prompt = USER_TMPL.replace("{{ user_goal }}", goal)
-        nodes = [
-            {"id":"summarize","type":"llm","prompt": "Summarize the following text: {{input_text}}"},
-        ]
-        edges = []
-        plan = Plan(goal=goal, nodes=[PlanNode(**n) for n in nodes], edges=[PlanEdge(**e) for e in edges], confidence=0.9).model_dump(by_alias=True)
-        messages = list(state.get("messages") or []) + [{"role":"assistant","content":"Planned summarization workflow."}]
-        return {"plan": plan, "messages": messages}
-    except Exception as e:
-        # Handle potential errors, e.g., LLM call fails
-        return {"error": str(e), "messages": list(state.get("messages") or [])}
+        goal = _resolve_goal(state)
+        plan = Plan(
+            goal=goal,
+            nodes=[
+                PlanNode(id="plan", type="llm", prompt=SYSTEM_PROMPT.strip() or None),
+                PlanNode(id="do", type="llm", prompt=_render_user_prompt(goal)),
+                PlanNode(id="finish", type="llm", prompt="Summarize the outcome and next steps."),
+            ],
+            edges=[
+                PlanEdge(from_="plan", to="do"),
+                PlanEdge(from_="do", to="do", if_="more_steps"),
+                PlanEdge(from_="do", to="finish", if_="steps_done"),
+            ],
+        ).model_dump(by_alias=True)
+
+        messages = list(state.get("messages") or [])
+        messages.append(AIMessage(content=f"Generated plan for goal: {goal}"))
+        current_step = {"more_steps": True, "steps_done": False}
+        return {"plan": plan, "messages": messages, "current_step": current_step}
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "messages": list(state.get("messages") or []),
+            "current_step": {"more_steps": False, "steps_done": False},
+        }
 """, encoding="utf-8")
 
     # child executor.py
