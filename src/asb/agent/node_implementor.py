@@ -43,7 +43,7 @@ def _sanitize_identifier(node_id: str) -> str:
 
 
 def _node_filename(node_id: str) -> str:
-    return f"{node_id}.py"
+    return f"{_sanitize_identifier(node_id)}.py"
 
 
 def _select_next_unimplemented_node(
@@ -51,12 +51,26 @@ def _select_next_unimplemented_node(
 ) -> Tuple[str | None, Dict[str, Any] | None]:
     generated = state.get("generated_files") or {}
     for node in _iter_graph_nodes(state):
-        node_id = str(node.get("id") or "").strip()
+        node_id: str | None = None
+        for key in ("id", "node", "name", "label"):
+            value = node.get(key)
+            if value is None:
+                continue
+            candidate = str(value).strip()
+            if candidate:
+                node_id = candidate
+                break
         if not node_id:
             continue
+        sanitized_id = _sanitize_identifier(node_id)
         filename = _node_filename(node_id)
-        if filename not in generated:
-            return node_id, node
+        legacy_filename = f"{node_id}.py" if node_id != sanitized_id else filename
+        if filename in generated or legacy_filename in generated:
+            continue
+        enriched_node = dict(node)
+        enriched_node.setdefault("id", node_id)
+        enriched_node["_sanitized_id"] = sanitized_id
+        return node_id, enriched_node
     return None, None
 
 
@@ -158,7 +172,8 @@ def implement_single_node(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         logger.debug("Generated code for node %s: %s", node_id, code[:2000])
 
-    filename = _node_filename(node_id)
+    sanitized_id = node.get("_sanitized_id") if node else None
+    filename = _node_filename(sanitized_id or node_id)
     updated_state["generated_files"][filename] = code
     updated_state["last_implemented_node"] = node_id
     return updated_state

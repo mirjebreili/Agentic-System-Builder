@@ -77,3 +77,33 @@ def test_generated_code_stored_under_expected_key(monkeypatch):
     assert "alpha.py" in updated["generated_files"]
     assert updated["generated_files"]["alpha.py"].lstrip().startswith("from typing import Any, Dict")
     assert updated["last_implemented_node"] == "alpha"
+
+
+def test_node_with_only_node_key_is_implemented(monkeypatch):
+    state = {
+        "architecture": {
+            "graph_structure": [
+                {"node": "Gamma Node", "type": "tool", "description": "C"},
+            ]
+        },
+        "generated_files": {},
+        "messages": [],
+    }
+
+    class FakeModel:
+        def invoke(self, messages, **kwargs):
+            return types.SimpleNamespace(
+                content=(
+                    "```python\n"
+                    "def run_gamma(state):\n"
+                    "    return state\n"
+                    "```"
+                )
+            )
+
+    monkeypatch.setattr(node_implementor, "get_chat_model", lambda: FakeModel())
+
+    updated = node_implementor.implement_single_node(state)
+
+    assert "Gamma_Node.py" in updated["generated_files"]
+    assert updated["last_implemented_node"] == "Gamma Node"
