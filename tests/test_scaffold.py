@@ -136,7 +136,13 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
             {"id": "analyze", "type": "llm"},
             {"id": "design", "type": "llm"},
             {"id": "finish", "type": "output"},
-        ]
+        ],
+        "edges": [
+            {"from": "entry", "to": "analyze"},
+            {"from": "analyze", "to": "design"},
+            {"from": "design", "to": "finish"},
+            {"from": "entry", "to": "finish"},
+        ],
     }
 
     generated_files = {
@@ -184,9 +190,19 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
             assert module_path.read_text(encoding="utf-8") == contents
 
         executor_text = (agent_dir / "executor.py").read_text(encoding="utf-8")
-        assert "_NODE_SPECS" in executor_text
-        assert "('entry', 'entry'" in executor_text
-        assert "('finish', 'finish'" in executor_text
+        assert "from .entry import run as entry" in executor_text
+        assert "from .design import run_design as design" in executor_text
+        assert "NODE_IMPLEMENTATIONS" in executor_text
+        assert "('entry', entry)" in executor_text
+        assert "('finish', finish)" in executor_text
+
+        graph_text = (agent_dir / "graph.py").read_text(encoding="utf-8")
+        assert "from .entry import run as entry" in graph_text
+        assert "from .analyze import analyze" in graph_text
+        assert "from .design import run_design as design" in graph_text
+        assert "g.add_node('entry', entry)" in graph_text
+        assert "g.add_edge(START, 'entry')" in graph_text
+        assert "g.add_edge('entry', 'finish')" in graph_text
 
         monkeypatch.syspath_prepend(str(project_dir))
         monkeypatch.setenv("LANGGRAPH_ENV", "cloud")
@@ -231,6 +247,7 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
                 ("entry", "analyze"),
                 ("analyze", "design"),
                 ("design", "finish"),
+                ("entry", "finish"),
                 ("finish", langgraph_graph.END),
             ]
             assert dummy.edges == expected_edges
