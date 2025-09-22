@@ -967,62 +967,64 @@ def _write_node_modules(
         destination.write_text(source, encoding="utf-8")
 
 
+def _detect_node_callable(module_path: Path, hints: Iterable[str]) -> str:
+    """Best-effort detection of the callable implementing a node."""
+
+    try:
+        source = module_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return module_path.stem
+
+    for hint in hints:
+        if not hint:
+            continue
+        pattern = rf"^\s*(?:async\s+)?def\s+{re.escape(hint)}\s*\("
+        if re.search(pattern, source, re.MULTILINE):
+            return hint
+
+    match = re.search(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source, re.MULTILINE)
+    if match:
+        return match.group(1)
+
+    return module_path.stem
+
+
 def _render_executor_module(
-    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]]
+    node_definitions: List[Dict[str, str]]
 ) -> str:
     lines: List[str] = [
         "# generated",
         "from __future__ import annotations",
         "",
-        "import importlib",
-        "from functools import lru_cache",
         "from typing import Any, Callable, Dict, Iterable, List, Tuple",
-        "",
-        "",
-        "_NODE_SPECS: List[Tuple[str, str, List[str]]] = [",
     ]
 
-    for node_id, module_name, hints, _ in node_specs:
-        hint_repr = ", ".join(repr(hint) for hint in hints)
-        lines.append(f"    ({node_id!r}, {module_name!r}, [{hint_repr}]),")
+    if node_definitions:
+        lines.append("")
+        for entry in node_definitions:
+            module = entry["module"]
+            target = entry["callable"]
+            alias = entry.get("alias") or module
+            if target == alias:
+                lines.append(f"from .{module} import {target}")
+            else:
+                lines.append(f"from .{module} import {target} as {alias}")
+
+    lines.extend(
+        [
+            "",
+            "",
+            "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = [",
+        ]
+    )
+
+    for entry in node_definitions:
+        alias = entry.get("alias") or entry["module"]
+        lines.append(f"    ({entry['id']!r}, {alias}),")
 
     lines.extend(
         [
             "]",
-            "",
-            "",
-            "@lru_cache(maxsize=None)",
-            "def _import_node(module: str):",
-            "    package = __name__.rsplit('.', 1)[0]",
-            "    return importlib.import_module(f\"{package}.{module}\")",
-            "",
-            "",
-            "def _resolve_callable(module, hints: Iterable[str]):",
-            "    for attr in hints:",
-            "        func = getattr(module, attr, None)",
-            "        if callable(func):",
-            "            return func",
-            "",
-            "    for attr in dir(module):",
-            "        if attr.startswith('_'):",
-            "            continue",
-            "        candidate = getattr(module, attr)",
-            "        if callable(candidate):",
-            "            return candidate",
-            "",
-            "    def _identity(state: Dict[str, Any]) -> Dict[str, Any]:",
-            "        return state",
-            "",
-            "    module_name = module.__name__.split('.')[-1]",
-            "    _identity.__name__ = f\"noop_{module_name}\"",
-            "    return _identity",
-            "",
-            "",
-            "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = []",
-            "for _node_id, _module_name, _hints in _NODE_SPECS:",
-            "    _module = _import_node(_module_name)",
-            "    _callable = _resolve_callable(_module, _hints)",
-            "    NODE_IMPLEMENTATIONS.append((_node_id, _callable))",
             "",
             "",
             "def iter_node_callables() -> Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:",
@@ -1036,6 +1038,198 @@ def _render_executor_module(
             "        current = node_callable(current)",
             "    return current",
             "",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+def _format_edge_endpoint(name: str) -> str:
+    upper = name.upper()
+    if upper == "START":
+        return "START"
+    if upper == "END":
+        return "END"
+    return repr(name)
+
+
+def _extract_edge_endpoint(value: Any) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    return candidate
+
+
+def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
+    """Render a graph module that wires nodes per the architecture plan."""
+
+    node_definitions: List[Dict[str, str]] = []
+    raw_defs = architecture_plan.get("_node_definitions")
+    if isinstance(raw_defs, list):
+        for entry in raw_defs:
+            if not isinstance(entry, dict):
+                continue
+            node_id = entry.get("id")
+            module = entry.get("module")
+            target = entry.get("callable")
+            alias = entry.get("alias") or (module if isinstance(module, str) else None)
+            if not (isinstance(node_id, str) and isinstance(module, str) and isinstance(target, str)):
+                continue
+            node_definitions.append(
+                {
+                    "id": node_id,
+                    "module": module,
+                    "callable": target,
+                    "alias": alias or module,
+                }
+            )
+
+    if not node_definitions:
+        nodes = architecture_plan.get("nodes")
+        if isinstance(nodes, list):
+            for entry in nodes:
+                if not isinstance(entry, dict):
+                    continue
+                raw_name = entry.get("name") or entry.get("id") or entry.get("label")
+                if raw_name is None:
+                    continue
+                node_id = str(raw_name).strip()
+                if not node_id:
+                    continue
+                module = _sanitize_identifier(node_id)
+                node_definitions.append(
+                    {
+                        "id": node_id,
+                        "module": module,
+                        "callable": module,
+                        "alias": module,
+                    }
+                )
+
+    lines: List[str] = [
+        "# generated",
+        "from __future__ import annotations",
+        "",
+        "import logging",
+        "import os",
+        "import sqlite3",
+        "import sys  # required for runtime argv detection",
+        "from typing import Any, Dict",
+        "",
+        "from langgraph.checkpoint.sqlite import SqliteSaver",
+        "from langgraph.graph import StateGraph, START, END",
+        "",
+        "from .state import AppState",
+    ]
+
+    if node_definitions:
+        lines.append("")
+        for entry in node_definitions:
+            module = entry["module"]
+            target = entry["callable"]
+            alias = entry.get("alias") or module
+            if target == alias:
+                lines.append(f"from .{module} import {target}")
+            else:
+                lines.append(f"from .{module} import {target} as {alias}")
+
+    lines.extend(
+        [
+            "",
+            "logger = logging.getLogger(__name__)",
+            "",
+            "",
+            "def running_on_langgraph_api() -> bool:",
+            "    langgraph_env = os.environ.get('LANGGRAPH_ENV', '').lower()",
+            "    if langgraph_env in {'cloud', 'api', 'hosted'}:",
+            "        return True",
+            "    if os.environ.get('LANGGRAPH_API_URL') or os.environ.get('LANGGRAPH_CLOUD'):",
+            "        return True",
+            "    argv = [arg.lower() for arg in sys.argv[1:]]",
+            "    return '--langgraph-api' in argv or ('langgraph' in argv and 'api' in argv)",
+            "",
+            "",
+            "def _make_graph(path: str | None = None):",
+            "    g = StateGraph(AppState)",
+        ]
+    )
+
+    node_ids = [entry["id"] for entry in node_definitions]
+    node_id_set = set(node_ids)
+
+    for entry in node_definitions:
+        alias = entry.get("alias") or entry["module"]
+        lines.append(f"    g.add_node({entry['id']!r}, {alias})")
+
+    edges_added: set[tuple[str, str]] = set()
+
+    def _append_edge(source: str, target: str) -> None:
+        key = (source, target)
+        if key in edges_added:
+            return
+        edges_added.add(key)
+        lines.append(f"    g.add_edge({_format_edge_endpoint(source)}, {_format_edge_endpoint(target)})")
+
+    raw_edges = architecture_plan.get("edges")
+    parsed_edges: List[tuple[str, str]] = []
+    if isinstance(raw_edges, list):
+        for entry in raw_edges:
+            if not isinstance(entry, dict):
+                continue
+            source = (
+                entry.get("from")
+                or entry.get("source")
+                or entry.get("start")
+                or entry.get("src")
+            )
+            target = entry.get("to") or entry.get("target") or entry.get("end") or entry.get("dst")
+            source_name = _extract_edge_endpoint(source)
+            target_name = _extract_edge_endpoint(target)
+            if source_name is None or target_name is None:
+                continue
+            parsed_edges.append((source_name, target_name))
+
+    if node_ids:
+        _append_edge("START", node_ids[0])
+        if parsed_edges:
+            for source_name, target_name in parsed_edges:
+                source_upper = source_name.upper()
+                target_upper = target_name.upper()
+                if source_upper not in {"START"} and source_name not in node_id_set:
+                    continue
+                if target_upper not in {"END"} and target_name not in node_id_set:
+                    continue
+                _append_edge(source_name, target_name)
+        else:
+            previous = node_ids[0]
+            for node_id in node_ids[1:]:
+                _append_edge(previous, node_id)
+                previous = node_id
+        _append_edge(node_ids[-1], "END")
+    else:
+        _append_edge("START", "END")
+
+    lines.extend(
+        [
+            "",
+            "    if running_on_langgraph_api():",
+            "        logger.info('LangGraph API runtime detected; compiling without a checkpointer.')",
+            "        return g.compile(checkpointer=None)",
+            "",
+            "    checkpointer = None",
+            "    if path:",
+            "        dir_path = os.path.dirname(path)",
+            "        if dir_path:",
+            "            os.makedirs(dir_path, exist_ok=True)",
+            "        connection = sqlite3.connect(path, check_same_thread=False)",
+            "        checkpointer = SqliteSaver(connection)",
+            "",
+            "    return g.compile(checkpointer=checkpointer)",
+            "",
+            "",
+            "graph = _make_graph()",
         ]
     )
 
@@ -1199,6 +1393,11 @@ where = ["src"]
         for key, value in (state.get("generated_files") or {}).items()
     }
 
+    architecture = state.get("architecture") or {}
+    architecture_plan = architecture.get("plan")
+    if not isinstance(architecture_plan, dict):
+        architecture_plan = architecture if isinstance(architecture, dict) else {}
+
     generated_state = _get_generated_content(
         normalized_generated,
         "state.py",
@@ -1304,11 +1503,6 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 """, encoding="utf-8")
 
-    architecture = state.get("architecture") or {}
-    architecture_plan = architecture.get("plan")
-    if not isinstance(architecture_plan, dict):
-        architecture_plan = architecture if isinstance(architecture, dict) else {}
-
     generated_architecture_nodes = generate_nodes_from_architecture(
         architecture_plan,
         user_goal,
@@ -1353,109 +1547,49 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 user_goal,
             )
 
+    node_definitions: List[Dict[str, str]] = []
     if node_specs:
-        executor_source = _get_generated_content(
-            normalized_generated,
-            "executor.py",
-            "src/agent/executor.py",
-            "agent/executor.py",
-        )
-        if executor_source is None:
-            executor_source = _render_executor_module(node_specs)
+        agent_dir = base / "src" / "agent"
+        for node_id, module_name, hints, _ in node_specs:
+            module_path = agent_dir / f"{module_name}.py"
+            callable_name = _detect_node_callable(module_path, hints)
+            alias = module_name
+            node_definitions.append(
+                {
+                    "id": node_id,
+                    "module": module_name,
+                    "callable": callable_name,
+                    "alias": alias,
+                }
+            )
 
-        (base / "src/agent/executor.py").write_text(executor_source, encoding="utf-8")
+    executor_source = _get_generated_content(
+        normalized_generated,
+        "executor.py",
+        "src/agent/executor.py",
+        "agent/executor.py",
+    )
+    if executor_source is None:
+        executor_source = _render_executor_module(node_definitions)
 
-        graph_source = _get_generated_content(
-            normalized_generated,
-            "graph.py",
-            "src/agent/graph.py",
-            "agent/graph.py",
-        )
-        if graph_source is None:
-            graph_source = _render_graph_module()
+    (base / "src/agent/executor.py").write_text(executor_source, encoding="utf-8")
 
-        (base / "src/agent/graph.py").write_text(graph_source, encoding="utf-8")
-    else:
-        (base / "src/agent/executor.py").write_text("""# generated
-from langchain_core.messages import HumanMessage
-from llm.client import get_chat_model
-from typing import Dict, Any
+    graph_source = _get_generated_content(
+        normalized_generated,
+        "graph.py",
+        "src/agent/graph.py",
+        "agent/graph.py",
+    )
 
-def execute(state: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        llm = get_chat_model()
-        plan = state.get("plan", {})
-        nodes = {n["id"]: n for n in plan.get("nodes", [])}
+    graph_plan: Dict[str, Any] = {}
+    if isinstance(architecture_plan, dict):
+        graph_plan = dict(architecture_plan)
+    graph_plan["_node_definitions"] = node_definitions
 
-        # Assuming the input text is in the last message
-        input_text = (state.get("messages") or [{}])[-1].get("content", "")
+    if graph_source is None:
+        graph_source = generate_dynamic_graph(graph_plan)
 
-        summarize_prompt = (nodes.get("summarize") or {}).get("prompt", "Summarize the following text: {{input_text}}")
-        prompt = summarize_prompt.replace("{{input_text}}", input_text)
-
-        summary = llm.invoke([HumanMessage(prompt)]).content
-
-        messages = list(state.get("messages") or []) + [{"role": "assistant", "content": summary}]
-        return {"messages": messages}
-    except Exception as e:
-        # Handle potential errors, e.g., LLM call fails
-        return {"error": str(e), "messages": list(state.get("messages") or [])}
-""", encoding="utf-8")
-
-        (base / "src/agent/graph.py").write_text("""# generated
-from __future__ import annotations
-
-import logging
-import os
-import sqlite3
-import sys  # required for runtime argv detection
-from typing import Any, Dict
-
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph import StateGraph, START, END
-
-from .state import AppState
-from .planner import plan_node
-from .executor import execute
-
-logger = logging.getLogger(__name__)
-
-
-def running_on_langgraph_api() -> bool:
-    langgraph_env = os.environ.get("LANGGRAPH_ENV", "").lower()
-    if langgraph_env in {"cloud", "api", "hosted"}:
-        return True
-    if os.environ.get("LANGGRAPH_API_URL") or os.environ.get("LANGGRAPH_CLOUD"):
-        return True
-    argv = [arg.lower() for arg in sys.argv[1:]]
-    return "--langgraph-api" in argv or ("langgraph" in argv and "api" in argv)
-
-
-def _make_graph(path: str | None = None):
-    g = StateGraph(AppState)
-    g.add_node("plan", plan_node)
-    g.add_node("execute", execute)
-    g.add_edge(START, "plan")
-    g.add_edge("plan", "execute")
-    g.add_edge("execute", END)
-
-    if running_on_langgraph_api():
-        logger.info("LangGraph API runtime detected; compiling without a checkpointer.")
-        return g.compile(checkpointer=None)
-
-    checkpointer = None
-    if path:
-        dir_path = os.path.dirname(path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        connection = sqlite3.connect(path, check_same_thread=False)
-        checkpointer = SqliteSaver(connection)
-
-    return g.compile(checkpointer=checkpointer)
-
-
-graph = _make_graph()
-""", encoding="utf-8")
+    (base / "src/agent/graph.py").write_text(graph_source, encoding="utf-8")
 
     # tests
     (base / "tests" / "test_smoke.py").write_text(
