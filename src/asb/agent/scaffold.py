@@ -206,6 +206,9 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import BaseMessage
 
 
+MESSAGE_PREFIX_PATTERN = re.compile(r"^(?:human|user|assistant|system)\\s*[:：-]\\s*", re.IGNORECASE)
+
+
 def _message_to_dict(message: Any) -> Dict[str, Any]:
     if isinstance(message, dict):
         return {k: message[k] for k in ("role", "content") if k in message}
@@ -223,47 +226,100 @@ def _message_to_dict(message: Any) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None}
 
 
+def _coerce_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (list, tuple)):
+        parts: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                candidate = item
+            elif isinstance(item, dict):
+                candidate = item.get("text") or item.get("content") or item.get("value")
+            else:
+                candidate = str(item)
+            if candidate:
+                parts.append(str(candidate))
+        text = " ".join(part.strip() for part in parts if part)
+    else:
+        text = str(value)
+
+    text = text.strip()
+    if not text:
+        return None
+
+    cleaned = MESSAGE_PREFIX_PATTERN.sub("", text, count=1).strip()
+    return cleaned or None
+
+
 def extract_input_text(state: Dict[str, Any]) -> str:
+    \"\"\"Return the most relevant user text while filtering role prefixes.
+
+    Direct input fields are inspected first, followed by the message history.
+    Known role prefixes such as "User:" or "Human:" are stripped from the
+    resolved string. The sentinel "No input text provided" is returned when
+    no meaningful text can be located.
+    \"\"\"
+
+    for key in ("input_text", "last_user_input"):
+        direct = _coerce_text(state.get(key))
+        if direct:
+            return direct
+
     messages = state.get("messages") or []
-    fallback = ""
+    fallback: Optional[str] = None
     for message in reversed(list(messages)):
         payload = _message_to_dict(message)
-        content = payload.get("content")
-        if not content:
+        text = _coerce_text(payload.get("content"))
+        if not text:
             continue
-        text = str(content)
+
         role = (payload.get("role") or "").lower()
         if role in {"user", "human"}:
             return text
-        if not fallback:
+        if fallback is None:
             fallback = text
 
-    direct = state.get("input_text") or state.get("last_user_input")
-    if direct:
-        return str(direct)
-    return fallback
+    if fallback:
+        return fallback
+
+    return "No input text provided"
 
 
 def extract_goal(state: Dict[str, Any]) -> str:
+    \"\"\"Derive a natural-language goal for the agent based on the state.
+
+    Plan and requirements metadata are consulted before falling back to
+    explicit goal fields or the inferred user input. If no goal can be
+    determined, the function returns "Complete the requested task".
+    \"\"\"
+
     plan = state.get("plan")
     if isinstance(plan, dict):
-        goal = plan.get("goal")
-        if goal:
-            return str(goal)
+        for key in ("goal", "summary", "description"):
+            candidate = _coerce_text(plan.get(key))
+            if candidate:
+                return candidate
 
     requirements = state.get("requirements")
     if isinstance(requirements, dict):
         for key in ("goal", "summary", "description", "problem"):
-            value = requirements.get(key)
-            if value:
-                return str(value)
+            candidate = _coerce_text(requirements.get(key))
+            if candidate:
+                return candidate
 
-    direct_goal = state.get("goal")
+    direct_goal = _coerce_text(state.get("goal"))
     if direct_goal:
-        return str(direct_goal)
+        return direct_goal
 
     inferred = extract_input_text(state)
-    return inferred or "Solve the user's request."
+    if inferred and inferred != "No input text provided":
+        return inferred
+
+    return "Complete the requested task"
 
 
 def parse_approaches(text: str) -> List[str]:
