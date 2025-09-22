@@ -250,6 +250,42 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
             shutil.rmtree(project_dir)
 
 
+def test_scaffold_project_generates_generic_templates(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    architecture = {
+        "graph_structure": [
+            {"id": "analyze", "description": "Assess the current requirements."},
+            {"id": "implement", "purpose": "Create the necessary solution artifact."},
+        ]
+    }
+
+    state = {
+        "plan": {"goal": "Adaptive Agent"},
+        "architecture": architecture,
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        analyze_source = (project_dir / "src" / "agent" / "analyze.py").read_text(encoding="utf-8")
+        implement_source = (project_dir / "src" / "agent" / "implement.py").read_text(encoding="utf-8")
+
+        for source in (analyze_source, implement_source):
+            assert "client.get_chat_model()" in source
+            assert "context_data.update" in source
+            assert "SystemMessage" in source and "HumanMessage" in source
+            assert "Use the context to fulfill this node's responsibility" in source
+        assert "analyze_result" in analyze_source
+        assert "implement_result" in implement_source
+        assert "Adaptive Agent" in analyze_source
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+
 def test_scaffold_project_generates_tot_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(scaffold, "ROOT", tmp_path)
     _write_template_files(tmp_path)
