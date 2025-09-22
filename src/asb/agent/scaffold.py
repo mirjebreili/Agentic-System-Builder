@@ -177,6 +177,457 @@ def _render_node_stub(node_id: str, sanitized: str) -> str:
     )
 
 
+TOT_UTILS_TEMPLATE = """from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional
+
+from langchain_core.messages import BaseMessage
+
+
+def _message_to_dict(message: Any) -> Dict[str, Any]:
+    if isinstance(message, dict):
+        return {k: message[k] for k in ("role", "content") if k in message}
+
+    data: Dict[str, Any] = {}
+    if isinstance(message, BaseMessage):
+        data["role"] = getattr(message, "type", None) or getattr(message, "role", None)
+        data["content"] = getattr(message, "content", None)
+        return {k: v for k, v in data.items() if v is not None}
+
+    if hasattr(message, "role"):
+        data["role"] = getattr(message, "role")
+    if hasattr(message, "content"):
+        data["content"] = getattr(message, "content")
+    return {k: v for k, v in data.items() if v is not None}
+
+
+def extract_input_text(state: Dict[str, Any]) -> str:
+    messages = state.get("messages") or []
+    fallback = ""
+    for message in reversed(list(messages)):
+        payload = _message_to_dict(message)
+        content = payload.get("content")
+        if not content:
+            continue
+        text = str(content)
+        role = (payload.get("role") or "").lower()
+        if role in {"user", "human"}:
+            return text
+        if not fallback:
+            fallback = text
+
+    direct = state.get("input_text") or state.get("last_user_input")
+    if direct:
+        return str(direct)
+    return fallback
+
+
+def extract_goal(state: Dict[str, Any]) -> str:
+    plan = state.get("plan")
+    if isinstance(plan, dict):
+        goal = plan.get("goal")
+        if goal:
+            return str(goal)
+
+    requirements = state.get("requirements")
+    if isinstance(requirements, dict):
+        for key in ("goal", "summary", "description", "problem"):
+            value = requirements.get(key)
+            if value:
+                return str(value)
+
+    direct_goal = state.get("goal")
+    if direct_goal:
+        return str(direct_goal)
+
+    inferred = extract_input_text(state)
+    return inferred or "Solve the user's request."
+
+
+def parse_approaches(text: str) -> List[str]:
+    if not text:
+        return []
+
+    entries: List[str] = []
+    current: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        bullet = re.match(r"^(?:\\d+[.)-]?|[-*+])\\s*(.+)$", stripped)
+        if bullet:
+            if current:
+                entries.append(" ".join(current).strip())
+                current = []
+            current.append(bullet.group(1).strip())
+            continue
+
+        if current:
+            current.append(stripped)
+        else:
+            current.append(stripped)
+
+    if current:
+        entries.append(" ".join(current).strip())
+
+    cleaned = [entry for entry in entries if entry]
+    if cleaned:
+        return cleaned
+
+    normalized = text.strip()
+    return [normalized] if normalized else []
+
+
+def _extract_score(text: str) -> float:
+    match = re.search(r"([0-9]+(?:\\.[0-9]+)?)", text)
+    if not match:
+        return 0.0
+
+    try:
+        value = float(match.group(1))
+    except (TypeError, ValueError):
+        return 0.0
+
+    if value > 10:
+        return value / 100 if value > 100 else value / 10
+    return value
+
+
+def score_thoughts(raw: str, thoughts: List[str]) -> List[Dict[str, Any]]:
+    if not raw:
+        return []
+
+    segments = parse_approaches(raw)
+    evaluations: List[Dict[str, Any]] = []
+    for index, thought in enumerate(thoughts, start=1):
+        segment = segments[index - 1] if index - 1 < len(segments) else ""
+        reasoning = segment.strip() or "No evaluation provided."
+        score = _extract_score(segment)
+        evaluations.append(
+            {
+                "index": index,
+                "thought": thought,
+                "score": score,
+                "reasoning": reasoning,
+            }
+        )
+
+    return evaluations
+
+
+def get_thoughts(state: Dict[str, Any]) -> List[str]:
+    container = state.get("tot") or {}
+    thoughts = container.get("thoughts")
+    if isinstance(thoughts, list):
+        return list(thoughts)
+
+    fallback = state.get("thoughts")
+    if isinstance(fallback, list):
+        return list(fallback)
+    return []
+
+
+def get_evaluations(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    container = state.get("tot") or {}
+    evaluations = container.get("evaluations")
+    if isinstance(evaluations, list):
+        return [dict(item) for item in evaluations]
+
+    fallback = state.get("evaluations")
+    if isinstance(fallback, list):
+        return [dict(item) for item in fallback]
+    return []
+
+
+def get_selected_thought(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    container = state.get("tot") or {}
+    selected = container.get("selected_thought")
+    if isinstance(selected, dict):
+        return dict(selected)
+
+    fallback = state.get("selected_thought")
+    if isinstance(fallback, dict):
+        return dict(fallback)
+    return None
+
+
+def select_top_evaluation(evaluations: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    best: Optional[Dict[str, Any]] = None
+    best_score = float("-inf")
+    for evaluation in evaluations:
+        candidate = dict(evaluation)
+        score = candidate.get("score", 0.0)
+        try:
+            numeric = float(score)
+        except (TypeError, ValueError):
+            numeric = 0.0
+        candidate["score"] = numeric
+        if numeric > best_score:
+            best_score = numeric
+            best = candidate
+
+    return best
+
+
+def update_tot_state(state: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    new_state = dict(state)
+    container = dict(state.get("tot") or {})
+    container.update(updates)
+    new_state["tot"] = container
+    new_state.pop("error", None)
+    return new_state
+
+
+def capture_tot_error(state: Dict[str, Any], node_id: str, error: Exception) -> Dict[str, Any]:
+    new_state = dict(state)
+    container = dict(state.get("tot") or {})
+    errors = list(container.get("errors") or [])
+    errors.append({"node": node_id, "message": str(error)})
+    container["errors"] = errors
+    new_state["tot"] = container
+    new_state["error"] = str(error)
+    return new_state
+"""
+
+
+def _normalize_tot_node_id(node_id: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", node_id.lower()).strip("_")
+
+
+def _ensure_tot_utils(agent_dir: Path, generated: Dict[str, str]) -> None:
+    utils_path = agent_dir / "utils.py"
+    provided = _get_generated_content(
+        generated,
+        "utils.py",
+        "src/agent/utils.py",
+        "agent/utils.py",
+    )
+    if provided is not None:
+        utils_path.write_text(provided, encoding="utf-8")
+        return
+
+    if not utils_path.exists():
+        utils_path.write_text(TOT_UTILS_TEMPLATE, encoding="utf-8")
+
+
+def _render_generate_thoughts(node_id: str, sanitized: str) -> str:
+    return f"""from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .utils import (
+    capture_tot_error,
+    extract_goal,
+    extract_input_text,
+    parse_approaches,
+    update_tot_state,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Generate diverse approaches for tree-of-thought reasoning.\"\"\"
+
+    try:
+        goal = extract_goal(state)
+        user_input = extract_input_text(state)
+        llm = client.get_chat_model()
+        system_prompt = (
+            "You are an expert reasoner generating candidate approaches for tree-of-thought exploration."
+        )
+        human_prompt = (
+            "Using the goal and the latest user input, propose multiple ways to make progress.\\n"
+            f"Goal: {{goal}}\\n"
+            f"Latest user input: {{user_input}}\\n"
+            "Return 3-5 numbered approaches, each with a concise explanation."
+        )
+        response = llm.invoke([SystemMessage(system_prompt), HumanMessage(human_prompt)])
+        content = getattr(response, "content", response)
+        text = content if isinstance(content, str) else str(content)
+        thoughts: List[str] = parse_approaches(text)
+        if not thoughts:
+            raise ValueError("Unable to parse any thoughts from the model output.")
+        return update_tot_state(
+            state,
+            {{
+                "thoughts": thoughts,
+                "raw_generate_response": text,
+            }},
+        )
+    except Exception as exc:
+        return capture_tot_error(state, "{sanitized}", exc)
+"""
+
+
+def _render_evaluate_thoughts(node_id: str, sanitized: str) -> str:
+    return f"""from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .utils import (
+    capture_tot_error,
+    extract_goal,
+    extract_input_text,
+    get_thoughts,
+    score_thoughts,
+    update_tot_state,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Score generated thoughts to inform downstream selection.\"\"\"
+
+    thoughts = get_thoughts(state)
+    if not thoughts:
+        return capture_tot_error(state, "{sanitized}", ValueError("No thoughts available for evaluation."))
+
+    try:
+        goal = extract_goal(state)
+        user_input = extract_input_text(state)
+        llm = client.get_chat_model()
+        numbered = "\\n".join(f"{{idx}}. {{thought}}" for idx, thought in enumerate(thoughts, start=1))
+        system_prompt = "You are an analytical critic who scores solution approaches."
+        human_prompt = (
+            "Assess each approach for how well it helps reach the goal. Provide a score between 0 and 1 and a short rationale for each item.\\n"
+            f"Goal: {{goal}}\\n"
+            f"Latest user input: {{user_input}}\\n"
+            "Thoughts:\\n"
+            f"{{numbered}}"
+        )
+        response = llm.invoke([SystemMessage(system_prompt), HumanMessage(human_prompt)])
+        content = getattr(response, "content", response)
+        text = content if isinstance(content, str) else str(content)
+        evaluations = score_thoughts(text, thoughts)
+        if not evaluations:
+            raise ValueError("Unable to parse evaluations for the generated thoughts.")
+        return update_tot_state(
+            state,
+            {{
+                "evaluations": evaluations,
+                "raw_evaluation_response": text,
+            }},
+        )
+    except Exception as exc:
+        return capture_tot_error(state, "{sanitized}", exc)
+"""
+
+
+def _render_select_best_thought(node_id: str, sanitized: str) -> str:
+    return f"""from __future__ import annotations
+
+from typing import Any, Dict
+
+from .utils import (
+    capture_tot_error,
+    get_evaluations,
+    get_thoughts,
+    select_top_evaluation,
+    update_tot_state,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Choose the most promising thought for finalization.\"\"\"
+
+    try:
+        evaluations = get_evaluations(state)
+        if evaluations:
+            selected = select_top_evaluation(evaluations)
+            if not selected:
+                raise ValueError("Evaluations were present but no selection could be made.")
+            return update_tot_state(state, {{"selected_thought": selected}})
+
+        thoughts = get_thoughts(state)
+        if not thoughts:
+            raise ValueError("No thoughts available to select from.")
+
+        fallback = {{
+            "index": 1,
+            "thought": thoughts[0],
+            "score": 0.0,
+            "reasoning": "Defaulted to the first thought due to missing evaluations.",
+        }}
+        return update_tot_state(state, {{"selected_thought": fallback}})
+    except Exception as exc:
+        return capture_tot_error(state, "{sanitized}", exc)
+"""
+
+
+def _render_final_answer(node_id: str, sanitized: str) -> str:
+    return f"""from __future__ import annotations
+
+from typing import Any, Dict
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .utils import (
+    capture_tot_error,
+    extract_goal,
+    extract_input_text,
+    get_selected_thought,
+    update_tot_state,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Produce the final assistant response using the selected thought.\"\"\"
+
+    selected = get_selected_thought(state)
+    if not selected:
+        return capture_tot_error(state, "{sanitized}", ValueError("No selected thought is available for the final answer."))
+
+    try:
+        goal = extract_goal(state)
+        user_input = extract_input_text(state)
+        llm = client.get_chat_model()
+        chosen = str(selected.get("thought") or "")
+        rationale = str(selected.get("reasoning") or "")
+        system_prompt = (
+            "You are a helpful assistant finalizing the response based on the chosen reasoning path."
+        )
+        human_prompt = (
+            "Compose the final assistant response using the selected approach while staying aligned with the goal and latest user input.\\n"
+            f"Goal: {{goal}}\\n"
+            f"Latest user input: {{user_input}}\\n"
+            f"Chosen approach: {{chosen}}\\n"
+            f"Rationale: {{rationale}}\\n"
+            "Deliver a clear and actionable answer."
+        )
+        response = llm.invoke([SystemMessage(system_prompt), HumanMessage(human_prompt)])
+        content = getattr(response, "content", response)
+        answer = content if isinstance(content, str) else str(content)
+        updated = update_tot_state(
+            state,
+            {{
+                "final_answer": answer,
+                "raw_final_response": answer,
+                "selected_thought": selected,
+            }},
+        )
+        messages = list(updated.get("messages") or state.get("messages") or [])
+        messages.append({{"role": "assistant", "content": answer}})
+        updated["messages"] = messages
+        return updated
+    except Exception as exc:
+        return capture_tot_error(state, "{sanitized}", exc)
+"""
+
+
+_TOT_RENDERERS = {
+    "generate_thoughts": _render_generate_thoughts,
+    "evaluate_thoughts": _render_evaluate_thoughts,
+    "select_best_thought": _render_select_best_thought,
+    "final_answer": _render_final_answer,
+}
+
+
 def _write_node_modules(
     base: Path,
     node_specs: List[Tuple[str, str, List[str]]],
@@ -185,6 +636,8 @@ def _write_node_modules(
 ) -> None:
     agent_dir = base / "src" / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
+
+    tot_utils_prepared = False
 
     for node_id, module_name, _ in node_specs:
         filename = f"{module_name}.py"
@@ -197,7 +650,15 @@ def _write_node_modules(
         destination = agent_dir / filename
 
         if source is None:
-            source = _render_node_stub(node_id, module_name)
+            normalized = _normalize_tot_node_id(node_id)
+            renderer = _TOT_RENDERERS.get(normalized)
+            if renderer is not None:
+                if not tot_utils_prepared:
+                    _ensure_tot_utils(agent_dir, generated)
+                    tot_utils_prepared = True
+                source = renderer(node_id, module_name)
+            else:
+                source = _render_node_stub(node_id, module_name)
             missing_entry = str(destination)
             if missing_entry not in missing_files:
                 missing_files.append(missing_entry)
