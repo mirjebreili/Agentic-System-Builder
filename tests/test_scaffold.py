@@ -1,5 +1,7 @@
+import importlib
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -117,6 +119,130 @@ def test_scaffold_project_prefers_generated_state(tmp_path, monkeypatch):
     try:
         state_path = project_dir / "src" / "agent" / "state.py"
         assert state_path.read_text(encoding="utf-8") == generated_state
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+
+def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    architecture = {
+        "graph_structure": [
+            {"id": "entry", "type": "input"},
+            {"id": "analyze", "type": "llm"},
+            {"id": "design", "type": "llm"},
+            {"id": "finish", "type": "output"},
+        ]
+    }
+
+    generated_files = {
+        "entry.py": (
+            "from typing import Any, Dict\n\n"
+            "def run(state: Dict[str, Any]) -> Dict[str, Any]:\n"
+            "    state['visited'] = state.get('visited', []) + ['entry']\n"
+            "    return state\n"
+        ),
+        "src/agent/analyze.py": (
+            "from typing import Any, Dict\n\n"
+            "def analyze(state: Dict[str, Any]) -> Dict[str, Any]:\n"
+            "    state['visited'] = state.get('visited', []) + ['analyze']\n"
+            "    return state\n"
+        ),
+        "agent/design.py": (
+            "from typing import Any, Dict\n\n"
+            "def run_design(state: Dict[str, Any]) -> Dict[str, Any]:\n"
+            "    state['visited'] = state.get('visited', []) + ['design']\n"
+            "    return state\n"
+        ),
+        "finish.py": (
+            "from typing import Any, Dict\n\n"
+            "def finish_run(state: Dict[str, Any]) -> Dict[str, Any]:\n"
+            "    state['visited'] = state.get('visited', []) + ['finish']\n"
+            "    return state\n"
+        ),
+    }
+
+    state = {
+        "plan": {"goal": "Architecture Agent"},
+        "architecture": architecture,
+        "generated_files": generated_files,
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        agent_dir = project_dir / "src" / "agent"
+        for filename, contents in generated_files.items():
+            module_name = filename.split("/")[-1]
+            module_path = agent_dir / module_name
+            assert module_path.exists(), f"Missing module for {module_name}"
+            assert module_path.read_text(encoding="utf-8") == contents
+
+        executor_text = (agent_dir / "executor.py").read_text(encoding="utf-8")
+        assert "_NODE_SPECS" in executor_text
+        assert "('entry', 'entry'" in executor_text
+        assert "('finish', 'finish'" in executor_text
+
+        monkeypatch.syspath_prepend(str(project_dir))
+        monkeypatch.setenv("LANGGRAPH_ENV", "cloud")
+
+        import langgraph.graph as langgraph_graph
+
+        class DummyStateGraph:
+            last_instance = None
+
+            def __init__(self, state_cls):
+                self.state_cls = state_cls
+                self.nodes = []
+                self.edges = []
+                self._compiled = False
+                DummyStateGraph.last_instance = self
+
+            def add_node(self, name, func):
+                self.nodes.append(name)
+
+            def add_edge(self, source, target):
+                self.edges.append((source, target))
+
+            def compile(self, *, checkpointer=None):
+                self._compiled = True
+                self.checkpointer = checkpointer
+                return self
+
+        monkeypatch.setattr(langgraph_graph, "StateGraph", DummyStateGraph)
+
+        removed_modules = {}
+        for name in list(sys.modules):
+            if name == "src" or name.startswith("src."):
+                removed_modules[name] = sys.modules.pop(name)
+
+        try:
+            graph_module = importlib.import_module("src.agent.graph")
+            dummy = DummyStateGraph.last_instance
+            assert dummy is not None
+            assert dummy.nodes == ["entry", "analyze", "design", "finish"]
+            expected_edges = [
+                (langgraph_graph.START, "entry"),
+                ("entry", "analyze"),
+                ("analyze", "design"),
+                ("design", "finish"),
+                ("finish", langgraph_graph.END),
+            ]
+            assert dummy.edges == expected_edges
+
+            executor_module = importlib.import_module("src.agent.executor")
+            node_order = [node_id for node_id, _ in executor_module.NODE_IMPLEMENTATIONS]
+            assert node_order == ["entry", "analyze", "design", "finish"]
+        finally:
+            for name in list(sys.modules):
+                if name == "src" or name.startswith("src."):
+                    if name not in removed_modules:
+                        sys.modules.pop(name)
+            for name, module in removed_modules.items():
+                sys.modules[name] = module
     finally:
         if project_dir.exists():
             shutil.rmtree(project_dir)
