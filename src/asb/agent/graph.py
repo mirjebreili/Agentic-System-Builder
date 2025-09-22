@@ -20,6 +20,26 @@ from asb.agent.code_fixer import code_fixer_node
 from asb.agent.sandbox import comprehensive_sandbox_test as sandbox_smoke
 from asb.agent.report import report
 
+# from langfuse.callback import CallbackHandler
+# langfuse_handler = CallbackHandler(
+#     public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
+#     secret_key=os.environ["LANGFUSE_SECRET_KEY"],
+#     host="http://192.168.33.85:3000"
+# )
+from langfuse.langchain import CallbackHandler
+from langfuse import get_client
+ 
+langfuse = get_client()
+ 
+# Verify connection
+if langfuse.auth_check():
+    print("Langfuse client is authenticated and ready!")
+else:
+    print("Authentication failed. Please check your credentials and host.")
+
+# Initialize the Langfuse handler
+langfuse_handler = CallbackHandler()
+
 print("### USING settings_v2 FROM:", s.__file__)
 print("### SETTINGS UID:", SETTINGS_UID)
 
@@ -107,7 +127,9 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_edge("report", END)
 
     if running_on_langgraph_api():
-        return g.compile(checkpointer=None)
+        return g.compile(checkpointer=None).with_config({
+        "callbacks": [langfuse_handler]
+    })
 
     dev_server = os.environ.get("ASB_DEV_SERVER")
     if path and not dev_server:
@@ -118,6 +140,9 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         memory = SqliteSaver(conn)
         return g.compile(checkpointer=memory)
 
-    return g.compile()
+    return g.compile().with_config({
+        "callbacks": [langfuse_handler]
+    })
+
 
 graph = _make_graph()
