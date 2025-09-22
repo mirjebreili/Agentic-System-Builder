@@ -4,76 +4,124 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 
-STATE_TEMPLATE = """from __future__ import annotations
-
-from typing import Annotated, Any, Dict, List, Literal, TypedDict
-
-from langchain_core.messages import AnyMessage
-from langgraph.graph.message import add_messages
-
-
-class ChatMessage(TypedDict, total=False):
-    role: Literal[\"human\", \"user\", \"assistant\", \"system\", \"tool\"]
-    content: str
-
-
-class AppState(TypedDict, total=False):
-    architecture: Dict[str, Any]
-    artifacts: Dict[str, Any]
-    build_attempts: int
-    code_fixes: Dict[str, Any]
-    code_validation: Dict[str, Any]
-    consecutive_failures: int
-    coordinator_decision: str
-    current_step: Dict[str, bool]
-    debug: Dict[str, Any]
-    error: str
-    evaluations: List[Dict[str, Any]]
-    fix_attempts: int
-    fix_strategy_used: str | None
-    flags: Dict[str, bool]
-    generated_files: Dict[str, str]
-    goal: str
-    implemented_nodes: List[Dict[str, Any]]
-    input_text: str
-    last_implemented_node: str | None
-    last_user_input: str
-    messages: Annotated[List[AnyMessage], add_messages]
-    metrics: Dict[str, Any]
-    next_action: str
-    passed: bool
-    plan: Dict[str, Any]
-    replan: bool
-    repair_start_time: float
-    report: Dict[str, Any]
-    requirements: Dict[str, Any]
-    review: Dict[str, Any]
-    sandbox: Dict[str, Any]
-    scaffold: Dict[str, Any]
-    selected_thought: Dict[str, Any]
-    syntax_validation: Dict[str, Any]
-    tests: Dict[str, Any]
-    thoughts: List[str]
-    tot: Dict[str, Any]
-    validation_errors: List[str]
+_ADAPTIVE_STATE_FIELDS: List[tuple[str, str]] = [
+    ("architecture", "Dict[str, Any]"),
+    ("artifacts", "Dict[str, Any]"),
+    ("build_attempts", "int"),
+    ("code_fixes", "Dict[str, Any]"),
+    ("code_validation", "Dict[str, Any]"),
+    ("consecutive_failures", "int"),
+    ("coordinator_decision", "str"),
+    ("current_step", "Dict[str, bool]"),
+    ("debug", "Dict[str, Any]"),
+    ("error", "str"),
+    ("evaluations", "List[Dict[str, Any]]"),
+    ("fix_attempts", "int"),
+    ("fix_strategy_used", "str | None"),
+    ("flags", "Dict[str, bool]"),
+    ("generated_files", "Dict[str, str]"),
+    ("goal", "str"),
+    ("implemented_nodes", "List[Dict[str, Any]]"),
+    ("input_text", "str"),
+    ("last_implemented_node", "str | None"),
+    ("last_user_input", "str"),
+    ("messages", "Annotated[List[AnyMessage], add_messages]"),
+    ("metrics", "Dict[str, Any]"),
+    ("next_action", "str"),
+    ("passed", "bool"),
+    ("plan", "Dict[str, Any]"),
+    ("replan", "bool"),
+    ("repair_start_time", "float"),
+    ("report", "Dict[str, Any]"),
+    ("requirements", "Dict[str, Any]"),
+    ("review", "Dict[str, Any]"),
+    ("sandbox", "Dict[str, Any]"),
+    ("scaffold", "Dict[str, Any]"),
+    ("selected_thought", "Dict[str, Any]"),
+    ("syntax_validation", "Dict[str, Any]"),
+    ("tests", "Dict[str, Any]"),
+    ("thoughts", "List[str]"),
+    ("tot", "Dict[str, Any]"),
+    ("validation_errors", "List[str]"),
+]
 
 
-def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
-    \"\"\"Add circuit breaker logic to prevent infinite loops\"\"\"
+def generate_adaptive_state_schema(architecture_plan: Dict[str, Any] | None) -> str:
+    """Render the default state.py template with plan-aware result fields."""
 
-    if \"fix_attempts\" not in state:
-        state[\"fix_attempts\"] = 0
+    nodes: List[str] = []
+    if isinstance(architecture_plan, dict):
+        raw_nodes = architecture_plan.get("nodes")
+        if isinstance(raw_nodes, list):
+            seen: set[str] = set()
+            for entry in raw_nodes:
+                if not isinstance(entry, dict):
+                    continue
+                raw_name = (
+                    entry.get("name")
+                    or entry.get("id")
+                    or entry.get("label")
+                )
+                if raw_name is None:
+                    continue
+                sanitized = (
+                    re.sub(r"\W+", "_", str(raw_name)).strip("_").lower() or "node"
+                )
+                field_name = f"{sanitized}_result"
+                if field_name in seen:
+                    continue
+                seen.add(field_name)
+                nodes.append(field_name)
 
-    if \"consecutive_failures\" not in state:
-        state[\"consecutive_failures\"] = 0
+    lines = [
+        "from __future__ import annotations",
+        "",
+        "from typing import Annotated, Any, Dict, List, Literal, TypedDict",
+        "",
+        "from langchain_core.messages import AnyMessage",
+        "from langgraph.graph.message import add_messages",
+        "",
+        "",
+        "class ChatMessage(TypedDict, total=False):",
+        '    role: Literal["human", "user", "assistant", "system", "tool"]',
+        "    content: str",
+        "",
+        "",
+        "class AppState(TypedDict, total=False):",
+    ]
 
-    if \"repair_start_time\" not in state:
-        import time
+    for field_name, annotation in _ADAPTIVE_STATE_FIELDS:
+        lines.append(f"    {field_name}: {annotation}")
 
-        state[\"repair_start_time\"] = time.time()
+    for node_field in nodes:
+        lines.append(f"    {node_field}: Dict[str, Any]")
 
-    return state
-"""
+    lines.extend(
+        [
+            "",
+            "",
+            "def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:",
+            '    """Add circuit breaker logic to prevent infinite loops"""',
+            "",
+            '    if "fix_attempts" not in state:',
+            '        state["fix_attempts"] = 0',
+            "",
+            '    if "consecutive_failures" not in state:',
+            '        state["consecutive_failures"] = 0',
+            "",
+            '    if "repair_start_time" not in state:',
+            "        import time",
+            "",
+            '        state["repair_start_time"] = time.time()',
+            "",
+            "    return state",
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
+
+
+STATE_TEMPLATE = generate_adaptive_state_schema({})
 
 # repository root
 ROOT = Path(__file__).resolve().parents[3]
@@ -1162,7 +1210,8 @@ where = ["src"]
     if generated_state:
         state_path.write_text(generated_state, encoding="utf-8")
     else:
-        state_path.write_text(STATE_TEMPLATE, encoding="utf-8")
+        fallback_state = generate_adaptive_state_schema(architecture_plan)
+        state_path.write_text(fallback_state, encoding="utf-8")
 
     # imports are already correct in copied files
 

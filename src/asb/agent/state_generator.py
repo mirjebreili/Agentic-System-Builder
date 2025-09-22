@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Literal, TypedDict
 
+from asb.agent.scaffold import generate_adaptive_state_schema
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,69 +124,76 @@ def _infer_collection_type(key: str, value: Any | None = None) -> str:
     return "Any"
 
 
-def _build_state_module(fields: List[tuple[str, str]]) -> str:
-    """Create the Python source for the generated state module."""
+def _parse_schema_fields(schema: str) -> Dict[str, str]:
+    header = "class AppState(TypedDict, total=False):"
+    start = schema.find(header)
+    if start == -1:
+        return {}
 
-    lines = [
-        "from __future__ import annotations",
-        "from typing import Any, Dict, List, Literal, TypedDict",
-        "",
-        "class ChatMessage(TypedDict, total=False):",
-        '    role: Literal["human", "user", "assistant", "system", "tool"]',
-        "    content: str",
-        "",
-        "class AppState(TypedDict, total=False):",
-    ]
+    body = schema[start + len(header) :]
+    lines = body.splitlines()[1:]
 
-    for name, annotation in fields:
-        lines.append(f"    {name}: {annotation}")
+    fields: Dict[str, str] = {}
+    for line in lines:
+        if not line.startswith("    "):
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if ":" not in stripped:
+            continue
+        name, annotation = stripped.split(":", 1)
+        fields[name.strip()] = annotation.strip()
+    return fields
 
-    lines.extend(
-        [
-            "",
-            "",
-            "def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:",
-            '    """Add circuit breaker logic to prevent infinite loops"""',
-            "",
-            '    if "fix_attempts" not in state:',
-            '        state["fix_attempts"] = 0',
-            "",
-            '    if "consecutive_failures" not in state:',
-            '        state["consecutive_failures"] = 0',
-            "",
-            '    if "repair_start_time" not in state:',
-            "        import time",
-            "",
-            '        state["repair_start_time"] = time.time()',
-            "",
-            "    return state",
-        ]
-    )
 
-    return "\n".join(lines) + "\n"
+def _append_fields_to_schema(
+    schema: str, new_fields: List[tuple[str, str]]
+) -> str:
+    if not new_fields:
+        return schema
+
+    marker = "\n\ndef update_state_with_circuit_breaker"
+    additions = "".join(f"    {name}: {annotation}\n" for name, annotation in new_fields)
+
+    if marker in schema:
+        return schema.replace(marker, f"{additions}{marker}", 1)
+
+    if not schema.endswith("\n"):
+        schema += "\n"
+    return schema + additions
 
 
 def generate_state_schema(state: Dict[str, Any]) -> Dict[str, Any]:
     """Generate the state schema module and store it in ``generated_files``."""
 
-    architecture = state.get("architecture", {}) or {}
-    state_flow = architecture.get("state_flow") or {}
+    architecture = state.get("architecture") or {}
+    if not isinstance(architecture, dict):
+        architecture = {}
 
-    fields: List[tuple[str, str]] = list(_BASE_FIELDS)
-    existing_field_names = {name for name, _ in fields}
+    plan_metadata = architecture.get("plan")
+    if not isinstance(plan_metadata, dict):
+        plan_metadata = architecture
+        if not isinstance(plan_metadata, dict):
+            plan_metadata = {}
+
+    state_module = generate_adaptive_state_schema(plan_metadata)
+    existing_fields = _parse_schema_fields(state_module)
+    existing_field_names = set(existing_fields)
+
+    state_flow = architecture.get("state_flow") or {}
+    additional_fields: List[tuple[str, str]] = []
 
     if isinstance(state_flow, dict):
         for key, value in state_flow.items():
-            normalized = key.strip()
-            if not normalized:
-                continue
-            if normalized in existing_field_names:
+            normalized = str(key).strip()
+            if not normalized or normalized in existing_field_names:
                 continue
             annotation = _infer_collection_type(normalized, value)
-            fields.append((normalized, annotation))
+            additional_fields.append((normalized, annotation))
             existing_field_names.add(normalized)
 
-    state_module = _build_state_module(fields)
+    state_module = _append_fields_to_schema(state_module, additional_fields)
 
     generated = dict(state.get("generated_files") or {})
     generated["state.py"] = state_module
