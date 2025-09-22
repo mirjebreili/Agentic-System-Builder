@@ -286,6 +286,47 @@ def test_scaffold_project_generates_generic_templates(tmp_path, monkeypatch):
             shutil.rmtree(project_dir)
 
 
+def test_scaffold_project_uses_structured_node_definitions(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    architecture = {
+        "nodes": [
+            {
+                "name": "research",
+                "purpose": "Gather background information about the task.",
+            },
+            {
+                "name": "implement",
+                "purpose": "Produce the requested solution artifact.",
+            },
+        ]
+    }
+
+    state = {
+        "plan": {"goal": "Structured Agent"},
+        "architecture": architecture,
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        agent_dir = project_dir / "src" / "agent"
+        for node in architecture["nodes"]:
+            filename = f"{scaffold._sanitize_identifier(node['name'])}.py"
+            module_path = agent_dir / filename
+            assert module_path.exists(), f"Expected module {filename} to be created"
+            contents = module_path.read_text(encoding="utf-8")
+            assert "Adaptive implementation for the" in contents
+            assert node["purpose"] in contents
+            assert "Use the context to fulfill this node's responsibility." in contents
+            assert node["name"] in contents
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+
 def test_scaffold_project_generates_tot_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(scaffold, "ROOT", tmp_path)
     _write_template_files(tmp_path)

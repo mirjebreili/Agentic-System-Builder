@@ -697,6 +697,50 @@ def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
 """
 
 
+def generate_nodes_from_architecture(
+    architecture_plan: Dict[str, Any], user_goal: str
+) -> Dict[str, str]:
+    """Generate module templates for structured architecture nodes."""
+
+    if not isinstance(architecture_plan, dict):
+        return {}
+
+    nodes = architecture_plan.get("nodes")
+    if not isinstance(nodes, list):
+        return {}
+
+    generated_modules: Dict[str, str] = {}
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+
+        raw_name = entry.get("name") or entry.get("id") or entry.get("label")
+        if raw_name is None:
+            continue
+
+        node_name = str(raw_name).strip()
+        if not node_name:
+            continue
+
+        purpose_value = entry.get("purpose") or entry.get("description") or ""
+        if isinstance(purpose_value, (list, tuple)):
+            purpose_text = " ".join(
+                str(item).strip() for item in purpose_value if item
+            ).strip()
+        else:
+            purpose_text = str(purpose_value).strip() if purpose_value else ""
+
+        module_name = _sanitize_identifier(node_name)
+        filename = f"{module_name}.py"
+        generated_modules[filename] = generate_generic_node_template(
+            node_name,
+            purpose_text,
+            user_goal,
+        )
+
+    return generated_modules
+
+
 def _render_select_best_thought(node_id: str, sanitized: str) -> str:
     return f"""from __future__ import annotations
 
@@ -1212,17 +1256,55 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
 """, encoding="utf-8")
 
     architecture = state.get("architecture") or {}
-    node_specs = _collect_architecture_nodes(architecture)
+    architecture_plan = architecture.get("plan")
+    if not isinstance(architecture_plan, dict):
+        architecture_plan = architecture if isinstance(architecture, dict) else {}
+
+    generated_architecture_nodes = generate_nodes_from_architecture(
+        architecture_plan,
+        user_goal,
+    )
+
+    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
+    if generated_architecture_nodes:
+        nodes_list = architecture_plan.get("nodes") or []
+        seen_nodes: set[str] = set()
+        for entry in nodes_list:
+            if not isinstance(entry, dict):
+                continue
+
+            raw_name = entry.get("name") or entry.get("id") or entry.get("label")
+            if raw_name is None:
+                continue
+
+            node_id = str(raw_name).strip()
+            if not node_id or node_id in seen_nodes:
+                continue
+
+            module_name = _sanitize_identifier(node_id)
+            hints = _candidate_call_hints(node_id, module_name)
+            metadata = dict(entry)
+            metadata.setdefault("id", node_id)
+            node_specs.append((node_id, module_name, hints, metadata))
+            seen_nodes.add(node_id)
+
+        agent_dir = base / "src" / "agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        for filename, source in generated_architecture_nodes.items():
+            (agent_dir / filename).write_text(source, encoding="utf-8")
+    else:
+        node_specs = _collect_architecture_nodes(architecture)
+
+        if node_specs:
+            _write_node_modules(
+                base,
+                node_specs,
+                normalized_generated,
+                missing_files,
+                user_goal,
+            )
 
     if node_specs:
-        _write_node_modules(
-            base,
-            node_specs,
-            normalized_generated,
-            missing_files,
-            user_goal,
-        )
-
         executor_source = _get_generated_content(
             normalized_generated,
             "executor.py",
