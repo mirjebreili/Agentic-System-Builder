@@ -2336,6 +2336,240 @@ def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
     return generate_dynamic_workflow_module(architecture_plan)
 
 
+def _extract_workflow_metadata(
+    architecture_plan: Dict[str, Any] | None,
+) -> tuple[str, List[str], List[tuple[str, str]]]:
+    """Collect normalized workflow metadata for the generated tests."""
+
+    architecture: Dict[str, Any] = {}
+    if isinstance(architecture_plan, dict):
+        architecture = dict(architecture_plan)
+
+    pattern_name: Optional[str] = None
+    for key in ("workflow_pattern", "pattern", "default_pattern"):
+        value = architecture.get(key)
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate:
+                pattern_name = candidate
+                break
+
+    ordered_nodes: List[str] = []
+    raw_sequence = architecture.get("workflow_sequence")
+    if isinstance(raw_sequence, list):
+        for entry in raw_sequence:
+            if isinstance(entry, str):
+                candidate = entry.strip()
+            elif isinstance(entry, dict):
+                candidate_raw = (
+                    entry.get("id")
+                    or entry.get("name")
+                    or entry.get("label")
+                )
+                candidate = str(candidate_raw).strip() if candidate_raw is not None else ""
+            else:
+                candidate = str(entry).strip()
+            if candidate:
+                ordered_nodes.append(candidate)
+
+    if not ordered_nodes:
+        raw_nodes = architecture.get("nodes") or architecture.get("graph_structure")
+        if isinstance(raw_nodes, list):
+            for entry in raw_nodes:
+                if isinstance(entry, dict):
+                    candidate_raw = (
+                        entry.get("id")
+                        or entry.get("name")
+                        or entry.get("label")
+                    )
+                    candidate = str(candidate_raw).strip() if candidate_raw is not None else ""
+                else:
+                    candidate = str(entry).strip()
+                if candidate:
+                    ordered_nodes.append(candidate)
+
+    edges: List[tuple[str, str]] = []
+    raw_edges = architecture.get("edges")
+    if isinstance(raw_edges, list):
+        for entry in raw_edges:
+            source: Any
+            target: Any
+            if isinstance(entry, dict):
+                source = (
+                    entry.get("from")
+                    or entry.get("source")
+                    or entry.get("start")
+                    or entry.get("src")
+                )
+                target = (
+                    entry.get("to")
+                    or entry.get("target")
+                    or entry.get("end")
+                    or entry.get("dst")
+                )
+            elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                source, target = entry
+            else:
+                try:
+                    source, target = entry
+                except Exception:
+                    continue
+            source_name = str(source).strip() if source is not None else ""
+            target_name = str(target).strip() if target is not None else ""
+            if source_name and target_name:
+                edges.append((source_name, target_name))
+
+    normalized_pattern = pattern_name or "sequential"
+    return normalized_pattern, ordered_nodes, edges
+
+
+def _format_literal_list(items: Iterable[Any]) -> str:
+    materialized = list(items)
+    if not materialized:
+        return "[]"
+    rendered = [f"    {repr(item)}," for item in materialized]
+    return "[\n" + "\n".join(rendered) + "\n]"
+
+
+def generate_comprehensive_tests(architecture_plan: Dict[str, Any] | None) -> str:
+    """Render a comprehensive pytest suite aligned with the workflow pattern."""
+
+    pattern_name, ordered_nodes, edges = _extract_workflow_metadata(architecture_plan)
+    include_self_correction = _architecture_requires_self_correction(architecture_plan)
+
+    lines: List[str] = [
+        "\"\"\"Comprehensive tests for the generated agent workflow.\"\"\"",
+        "",
+        "from __future__ import annotations",
+        "",
+        "from pathlib import Path",
+        "",
+        "import pytest",
+        "",
+        "import src.agent.executor as executor_module",
+        "import src.agent.graph as graph_module",
+        "from src.agent.state import AppState",
+        "",
+        f"EXPECTED_PATTERN_NAME = {pattern_name!r}",
+        f"EXPECTED_NODE_SEQUENCE = {_format_literal_list(ordered_nodes)}",
+        f"EXPECTED_EDGE_SET = {_format_literal_list(edges)}",
+        f"EXPECTS_SELF_CORRECTION = {include_self_correction}",
+        "",
+        "",
+        "@pytest.fixture(autouse=True)",
+        "def stub_node_implementations(monkeypatch):",
+        "    original = list(getattr(executor_module, \"NODE_IMPLEMENTATIONS\", []))",
+        "    stubs = []",
+        "    if original:",
+        "        for node_id, _ in original:",
+        "            def _make_stub(identifier):",
+        "                def _stub(state):",
+        "                    updated = dict(state or {})",
+        "                    messages = list(updated.get(\"messages\") or [])",
+        "                    messages.append({\"role\": \"assistant\", \"content\": f\"Stub executed {identifier}\"})",
+        "                    updated[\"messages\"] = messages",
+        "                    debug = dict(updated.get(\"debug\") or {})",
+        "                    visited = list(debug.get(\"visited_nodes\") or [])",
+        "                    visited.append(identifier)",
+        "                    debug[\"visited_nodes\"] = visited",
+        "                    updated[\"debug\"] = debug",
+        "                    scaffold = dict(updated.get(\"scaffold\") or {})",
+        "                    scaffold.setdefault(\"ok\", True)",
+        "                    updated[\"scaffold\"] = scaffold",
+        "                    if EXPECTS_SELF_CORRECTION:",
+        "                        payload = dict(updated.get(\"self_correction\") or {})",
+        "                        payload.setdefault(\"history\", [])",
+        "                        payload.setdefault(\"attempt\", int(payload.get(\"attempt\") or 0))",
+        "                        updated[\"self_correction\"] = payload",
+        "                    return updated",
+        "                return _stub",
+        "            stubs.append((node_id, _make_stub(node_id)))",
+        "    else:",
+        "        def _fallback(state):",
+        "            updated = dict(state or {})",
+        "            messages = list(updated.get(\"messages\") or [])",
+        "            messages.append({\"role\": \"assistant\", \"content\": \"Stub executed fallback\"})",
+        "            updated[\"messages\"] = messages",
+        "            debug = dict(updated.get(\"debug\") or {})",
+        "            visited = list(debug.get(\"visited_nodes\") or [])",
+        "            visited.append(\"fallback\")",
+        "            debug[\"visited_nodes\"] = visited",
+        "            updated[\"debug\"] = debug",
+        "            scaffold = dict(updated.get(\"scaffold\") or {})",
+        "            scaffold.setdefault(\"ok\", True)",
+        "            updated[\"scaffold\"] = scaffold",
+        "            if EXPECTS_SELF_CORRECTION:",
+        "                payload = dict(updated.get(\"self_correction\") or {})",
+        "                payload.setdefault(\"history\", [])",
+        "                payload.setdefault(\"attempt\", 0)",
+        "                updated[\"self_correction\"] = payload",
+        "            return updated",
+        "        stubs.append((\"fallback\", _fallback))",
+        "    monkeypatch.setattr(executor_module, \"NODE_IMPLEMENTATIONS\", stubs, raising=False)",
+        "    monkeypatch.setattr(graph_module, \"NODE_IMPLEMENTATIONS\", stubs, raising=False)",
+        "    graph_module.graph = graph_module._make_graph()",
+        "    return stubs",
+        "",
+        "",
+        "def test_graph_module_exports_graph():",
+        "    assert hasattr(graph_module, \"graph\")",
+        "    assert graph_module.graph is not None",
+        "",
+        "",
+        "def test_workflow_pattern_alignment(stub_node_implementations):",
+        "    pattern = graph_module.analyze_workflow_pattern()",
+        "    assert isinstance(pattern, dict)",
+        "    assert pattern.get(\"name\") == EXPECTED_PATTERN_NAME",
+        "    actual_nodes = [node_id for node_id, _ in stub_node_implementations]",
+        "    if EXPECTED_NODE_SEQUENCE:",
+        "        for node_id in EXPECTED_NODE_SEQUENCE:",
+        "            assert node_id in actual_nodes",
+        "            assert node_id in pattern.get(\"ordered_nodes\", [])",
+        "    if EXPECTED_EDGE_SET:",
+        "        expected_edges = {tuple(edge) for edge in EXPECTED_EDGE_SET}",
+        "        actual_edges = {tuple(edge) for edge in pattern.get(\"edges\", [])}",
+        "        assert expected_edges.issubset(actual_edges)",
+        "",
+        "",
+        "def test_end_to_end_execution(tmp_path: Path, stub_node_implementations):",
+        "    checkpoint = tmp_path / \"checkpoints\" / \"graph.db\"",
+        "    compiled = graph_module._make_graph(str(checkpoint))",
+        "    result = compiled.invoke({\"messages\": []}, config={\"configurable\": {\"thread_id\": \"test-e2e\"}})",
+        "    assert isinstance(result, dict)",
+        "    assert \"messages\" in result",
+        "    assert isinstance(result[\"messages\"], list)",
+        "    debug = result.get(\"debug\", {})",
+        "    visited = debug.get(\"visited_nodes\", [])",
+        "    if stub_node_implementations:",
+        "        assert visited, \"Expected stub nodes to record execution order\"",
+        "    if EXPECTS_SELF_CORRECTION:",
+        "        assert \"self_correction\" in result",
+        "    else:",
+        "        assert \"self_correction\" not in result",
+        "",
+        "",
+        "def test_generate_dynamic_workflow_handles_missing_state(stub_node_implementations):",
+        "    compiled = graph_module.generate_dynamic_workflow(state=None, path=None)",
+        "    result = compiled.invoke({\"messages\": []}, config={\"configurable\": {\"thread_id\": \"test-dynamic\"}})",
+        "    assert isinstance(result, dict)",
+        "    assert \"messages\" in result",
+        "",
+        "",
+        "def test_state_schema_self_correction_contract():",
+        "    annotations = getattr(AppState, \"__annotations__\", {})",
+        "    if EXPECTS_SELF_CORRECTION:",
+        "        assert \"self_correction\" in annotations",
+        "    else:",
+        "        assert \"self_correction\" not in annotations",
+        "",
+        "",
+        "if __name__ == \"__main__\":",
+        "    raise SystemExit(pytest.main([__file__]))",
+    ]
+
+    return "\n".join(lines) + "\n"
+
+
 def _render_graph_module() -> str:
     lines: List[str] = [
         "# generated",
@@ -2693,68 +2927,16 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
     (base / "src/agent/graph.py").write_text(graph_source, encoding="utf-8")
 
     # tests
-    (base / "tests" / "test_smoke.py").write_text(
-        '''"""Smoke tests for the generated agent project."""
-
-import importlib
-from pathlib import Path
-
-import pytest
-
-
-def test_import_graph():
-    module = importlib.import_module("src.agent.graph")
-    assert hasattr(module, "graph")
-    assert module.graph is not None
-
-
-def test_state_structure():
-    state_module = importlib.import_module("src.agent.state")
-    assert hasattr(state_module, "AppState")
-    state_keys = set(getattr(state_module, "AppState").__annotations__)
-    expected_keys = {
-        "architecture",
-        "artifacts",
-        "debug",
-        "flags",
-        "generated_files",
-        "messages",
-        "metrics",
-        "passed",
-        "plan",
-        "replan",
-        "report",
-        "requirements",
-        "review",
-        "sandbox",
-        "scaffold",
-        "syntax_validation",
-        "tests",
-    }
-    assert expected_keys.issubset(state_keys)
-
-
-def test_graph_execution(tmp_path: Path):
-    from src.agent.graph import _make_graph
-
-    checkpoint_path = tmp_path / "checkpoints" / "graph.db"
-    graph = _make_graph(str(checkpoint_path))
-    result = graph.invoke(
-        {"messages": []}, config={"configurable": {"thread_id": "test-smoke"}}
-    )
-    assert isinstance(result, dict)
-    assert "messages" in result
-    assert isinstance(result["messages"], list)
-    assert any(
-        key in result for key in ("plan", "current_step", "scaffold", "report")
-    )
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-''',
+    tests_dir = base / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    test_suite_path = tests_dir / "test_workflow.py"
+    test_suite_path.write_text(
+        generate_comprehensive_tests(architecture_plan),
         encoding="utf-8",
     )
+    legacy_smoke = tests_dir / "test_smoke.py"
+    if legacy_smoke.exists():
+        legacy_smoke.unlink()
 
     # README
     (base / "README.md").write_text(
