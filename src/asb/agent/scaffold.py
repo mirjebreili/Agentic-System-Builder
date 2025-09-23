@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json, os, re, shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
 _ADAPTIVE_STATE_FIELDS: List[tuple[str, str]] = [
@@ -899,6 +899,706 @@ _TOT_RENDERERS = {
 }
 
 
+SELF_CORRECTING_UTILS_TEMPLATE = """from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, List, Optional
+
+from langchain_core.messages import BaseMessage
+
+
+DEFAULT_MAX_ATTEMPTS = 3
+
+MESSAGE_PREFIX_PATTERN = re.compile(r"^(?:human|user|assistant|system)\\s*[:：-]\\s*", re.IGNORECASE)
+JSON_BLOCK_PATTERN = re.compile(r"\\{[\\s\\S]*\\}")
+
+
+def _message_to_dict(message: Any) -> Dict[str, Any]:
+    if isinstance(message, dict):
+        return {k: message[k] for k in ("role", "content") if k in message}
+
+    data: Dict[str, Any] = {}
+    if isinstance(message, BaseMessage):
+        data["role"] = getattr(message, "type", None) or getattr(message, "role", None)
+        data["content"] = getattr(message, "content", None)
+        return {k: v for k, v in data.items() if v is not None}
+
+    if hasattr(message, "role"):
+        data["role"] = getattr(message, "role")
+    if hasattr(message, "content"):
+        data["content"] = getattr(message, "content")
+    return {k: v for k, v in data.items() if v is not None}
+
+
+def _coerce_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        candidate = value
+    elif isinstance(value, (list, tuple)):
+        parts: List[str] = []
+        for item in value:
+            coerced = _coerce_text(item)
+            if coerced:
+                parts.append(coerced)
+        candidate = " ".join(parts)
+    elif isinstance(value, dict):
+        primary = value.get("text") or value.get("content") or value.get("value")
+        if primary is not None:
+            return _coerce_text(primary)
+        return None
+    else:
+        candidate = str(value)
+
+    cleaned = MESSAGE_PREFIX_PATTERN.sub("", candidate or "", count=1).strip()
+    return cleaned or None
+
+
+def extract_input_text(state: Dict[str, Any]) -> str:
+    for key in ("input_text", "last_user_input"):
+        direct = _coerce_text(state.get(key))
+        if direct:
+            return direct
+
+    messages = state.get("messages") or []
+    fallback: Optional[str] = None
+    for message in reversed(list(messages)):
+        payload = _message_to_dict(message)
+        text = _coerce_text(payload.get("content"))
+        if not text:
+            continue
+        role = (payload.get("role") or "").lower()
+        if role in {"user", "human"}:
+            return text
+        if fallback is None:
+            fallback = text
+
+    return fallback or "No recent user input available."
+
+
+def extract_goal(state: Dict[str, Any]) -> str:
+    plan = state.get("plan")
+    if isinstance(plan, dict):
+        for key in ("goal", "summary", "description"):
+            candidate = _coerce_text(plan.get(key))
+            if candidate:
+                return candidate
+
+    requirements = state.get("requirements")
+    if isinstance(requirements, dict):
+        for key in ("goal", "summary", "description", "objective", "problem"):
+            candidate = _coerce_text(requirements.get(key))
+            if candidate:
+                return candidate
+
+    direct = _coerce_text(state.get("goal"))
+    if direct:
+        return direct
+
+    inferred = extract_input_text(state)
+    return inferred or "Complete the requested task."
+
+
+def _collect_requirement_sections(source: Dict[str, Any], keys: List[str]) -> List[str]:
+    sections: List[str] = []
+    for key in keys:
+        if key not in source:
+            continue
+        candidate = _coerce_text(source.get(key))
+        if not candidate:
+            continue
+        label = key.replace("_", " ").title()
+        sections.append(f"{label}: {candidate}")
+    return sections
+
+
+def extract_requirements(state: Dict[str, Any]) -> str:
+    requirements = state.get("requirements")
+    sections: List[str] = []
+    if isinstance(requirements, dict):
+        sections.extend(
+            _collect_requirement_sections(
+                requirements,
+                [
+                    "summary",
+                    "description",
+                    "acceptance_criteria",
+                    "requirements",
+                    "constraints",
+                    "notes",
+                ],
+            )
+        )
+
+    plan = state.get("plan")
+    if isinstance(plan, dict):
+        sections.extend(
+            _collect_requirement_sections(
+                plan,
+                ["plan", "steps", "milestones", "context"],
+            )
+        )
+
+    if sections:
+        return "\\n".join(dict.fromkeys(section for section in sections if section))
+
+    return "No explicit requirements were provided."
+
+
+def get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    scaffold = state.get("scaffold")
+    if isinstance(scaffold, dict):
+        payload = scaffold.get("self_correction")
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}
+
+
+def apply_self_correction_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    new_state = dict(state)
+    scaffold = dict(new_state.get("scaffold") or {})
+    scaffold["self_correction"] = payload
+    new_state["scaffold"] = scaffold
+    new_state.pop("error", None)
+    return new_state
+
+
+def ensure_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    payload = get_self_correction_payload(state)
+    payload.setdefault("history", [])
+    payload.setdefault("attempt", int(payload.get("attempt") or 0))
+    payload.setdefault("needs_revision", bool(payload.get("needs_revision", False)))
+    payload.setdefault("awaiting_validation", bool(payload.get("awaiting_validation", False)))
+    payload.setdefault("validation", payload.get("validation") or {})
+    payload.setdefault("max_attempts", payload.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+    return payload
+
+
+def register_candidate(
+    state: Dict[str, Any],
+    candidate: str,
+    *,
+    node: str,
+    reasoning: Optional[str] = None,
+    attempt: Optional[int] = None,
+) -> Dict[str, Any]:
+    payload = ensure_self_correction_payload(state)
+    attempt_index = attempt if isinstance(attempt, int) and attempt > 0 else int(payload.get("attempt") or 0) + 1
+    payload["attempt"] = attempt_index
+    payload["latest_candidate"] = candidate
+    payload["needs_revision"] = False
+    payload["awaiting_validation"] = True
+    history = list(payload.get("history") or [])
+    entry: Dict[str, Any] = {
+        "attempt": attempt_index,
+        "node": node,
+    }
+    snippet = _coerce_text(candidate)
+    if snippet:
+        entry["summary"] = snippet[:200]
+    if reasoning:
+        entry["reasoning"] = reasoning
+    history.append(entry)
+    payload["history"] = history
+    payload["validation"] = {}
+    return apply_self_correction_payload(state, payload)
+
+
+def record_validation_result(
+    state: Dict[str, Any],
+    success: bool,
+    feedback: str,
+    *,
+    node: str,
+    raw: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = ensure_self_correction_payload(state)
+    attempt_index = int(payload.get("attempt") or 0)
+    feedback_text = _coerce_text(feedback) or "No feedback provided."
+    validation: Dict[str, Any] = {
+        "success": bool(success),
+        "feedback": feedback_text,
+        "attempt": attempt_index,
+        "node": node,
+    }
+    if raw is not None:
+        validation["raw"] = raw
+    payload["validation"] = validation
+    payload["needs_revision"] = not bool(success)
+    payload["awaiting_validation"] = False
+
+    history = list(payload.get("history") or [])
+    for entry in reversed(history):
+        if entry.get("attempt") == attempt_index:
+            entry["verdict"] = "pass" if success else "fail"
+            if feedback_text:
+                entry["feedback"] = feedback_text
+            validators = list(entry.get("validators") or [])
+            if node not in validators:
+                validators.append(node)
+            entry["validators"] = validators
+            break
+    payload["history"] = history
+    return apply_self_correction_payload(state, payload)
+
+
+def summarize_history(payload: Dict[str, Any]) -> str:
+    history = payload.get("history")
+    if not isinstance(history, list) or not history:
+        return "No previous attempts have been recorded."
+
+    lines: List[str] = []
+    for entry in history:
+        attempt = entry.get("attempt")
+        lines.append(f"Attempt {attempt}:")
+        verdict = entry.get("verdict")
+        if verdict:
+            lines.append(f"- Result: {verdict}")
+        feedback = entry.get("feedback")
+        if feedback:
+            lines.append(f"- Feedback: {feedback}")
+        reasoning = entry.get("reasoning")
+        if reasoning:
+            lines.append(f"- Reasoning: {reasoning}")
+    return "\\n".join(lines)
+
+
+def parse_validation_response(text: str) -> Dict[str, Any]:
+    if not text:
+        return {"success": False, "feedback": "Validator returned an empty response."}
+
+    snippet = text
+    match = JSON_BLOCK_PATTERN.search(text)
+    if match:
+        snippet = match.group(0)
+
+    data: Optional[Dict[str, Any]] = None
+    try:
+        parsed = json.loads(snippet)
+        if isinstance(parsed, dict):
+            data = parsed
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = None
+
+    if data is not None:
+        success_value = data.get("success")
+        if success_value is None:
+            success_value = data.get("verdict") or data.get("result")
+        if isinstance(success_value, str):
+            normalized = success_value.strip().lower()
+            success = normalized in {"pass", "passed", "true", "success", "succeeded", "approve", "approved", "ok"}
+        else:
+            success = bool(success_value)
+
+        feedback_value = data.get("feedback") or data.get("reason") or data.get("notes") or data.get("critique")
+        if isinstance(feedback_value, (list, tuple)):
+            feedback = " ".join(str(item) for item in feedback_value if item)
+        elif feedback_value is None:
+            feedback = text.strip()
+        else:
+            feedback = str(feedback_value)
+
+        return {
+            "success": success,
+            "feedback": feedback.strip() or text.strip(),
+            "data": data,
+        }
+
+    lowered = text.strip().lower()
+    if lowered.startswith("pass") or lowered.startswith("success"):
+        return {"success": True, "feedback": text.strip() or "Validator indicated success."}
+    if lowered.startswith("fail") or lowered.startswith("error") or lowered.startswith("issue"):
+        return {"success": False, "feedback": text.strip() or "Validator reported issues."}
+
+    return {"success": False, "feedback": text.strip() or "Validator response could not be parsed."}
+
+
+def should_retry(payload: Dict[str, Any], limit: Optional[int] = None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not payload.get("needs_revision"):
+        return False
+
+    if isinstance(limit, int) and limit > 0:
+        max_attempts = limit
+    else:
+        max_attempts = int(payload.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+
+    attempt = int(payload.get("attempt") or 0)
+    return attempt < max_attempts
+"""
+
+
+_SELF_CORRECTING_ROLE_ALIASES: Dict[str, set[str]] = {
+    "generate": {"generate", "generator", "draft", "proposal", "produce", "create", "initial"},
+    "validate": {
+        "validate",
+        "validation",
+        "verify",
+        "critique",
+        "review",
+        "check",
+        "assess",
+        "score",
+        "analyze",
+    },
+    "correct": {"correct", "correction", "fix", "repair", "revise", "refine", "improve", "update"},
+}
+
+
+def _normalize_self_correcting_node_id(node_id: str) -> Optional[str]:
+    if not node_id:
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", "_", node_id.lower()).strip("_")
+    if not normalized:
+        return None
+
+    for role, aliases in _SELF_CORRECTING_ROLE_ALIASES.items():
+        for alias in aliases:
+            if normalized == alias or normalized.startswith(f"{alias}_") or normalized.endswith(f"_{alias}"):
+                return role
+    return None
+
+
+def _self_correcting_purpose(metadata: Dict[str, Any], fallback: str) -> str:
+    if not isinstance(metadata, dict):
+        return fallback
+    for key in (
+        "purpose",
+        "description",
+        "summary",
+        "objective",
+        "details",
+        "task",
+    ):
+        value = metadata.get(key)
+        text = ""
+        if isinstance(value, (list, tuple)):
+            text = " ".join(str(item).strip() for item in value if item)
+        elif value is not None:
+            text = str(value).strip()
+        if text:
+            return text
+    return fallback
+
+
+def _render_self_correcting_generate(
+    node_id: str,
+    sanitized: str,
+    purpose: str,
+    user_goal: str,
+) -> str:
+    purpose_literal = json.dumps(purpose or f"Generate the solution for {node_id}.")
+    goal_literal = json.dumps(user_goal or "Complete the requested task.")
+    label_literal = json.dumps(node_id)
+    template = """from __future__ import annotations
+
+from typing import Any, Dict
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .self_correction import (
+    DEFAULT_MAX_ATTEMPTS,
+    apply_self_correction_payload,
+    ensure_self_correction_payload,
+    extract_goal,
+    extract_input_text,
+    extract_requirements,
+    register_candidate,
+    summarize_history,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Generate or regenerate the working solution candidate.\"\"\"
+
+    payload = ensure_self_correction_payload(state)
+    payload.setdefault("max_attempts", DEFAULT_MAX_ATTEMPTS)
+    if payload.get("attempt", 0) > 0 and not payload.get("needs_revision"):
+        return state
+
+    working_state = apply_self_correction_payload(state, payload)
+
+    goal = extract_goal(working_state) or {goal_literal}
+    user_input = extract_input_text(working_state)
+    requirements = extract_requirements(working_state)
+    feedback_summary = summarize_history(payload)
+    directive = {purpose_literal}
+
+    llm = client.get_chat_model()
+    system_prompt = (
+        "You are a focused creator generating high-quality solutions that satisfy detailed requirements."
+    )
+    human_prompt = (
+        "You are operating inside a self-correcting workflow. Produce the best complete solution you can.\n"
+        "Overall goal: {{goal}}\n"
+        "Latest user input: {{user_input}}\n"
+        "Documented requirements:\n"
+        "{{requirements}}\n"
+        "Prior attempts and feedback:\n"
+        "{{feedback_summary}}\n"
+        "Specific directive: {{directive}}\n"
+        "Respond with the full proposed solution ready for validation."
+    ).format(
+        goal=goal,
+        user_input=user_input,
+        requirements=requirements,
+        feedback_summary=feedback_summary,
+        directive=directive,
+    )
+
+    response = llm.invoke(
+        [
+            SystemMessage(system_prompt),
+            HumanMessage(human_prompt),
+        ]
+    )
+    content = getattr(response, "content", response)
+    candidate = content if isinstance(content, str) else str(content)
+
+    updated_state = register_candidate(working_state, candidate, node={label_literal})
+    return updated_state
+"""
+    return template.format(
+        sanitized=sanitized,
+        goal_literal=goal_literal,
+        purpose_literal=purpose_literal,
+        label_literal=label_literal,
+    )
+
+def _render_self_correcting_validate(
+    node_id: str,
+    sanitized: str,
+    purpose: str,
+) -> str:
+    label_literal = json.dumps(node_id)
+    purpose_literal = json.dumps(purpose or f"Review the candidate produced during {node_id}.")
+    template = """from __future__ import annotations
+
+import json
+from typing import Any, Dict
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .self_correction import (
+    apply_self_correction_payload,
+    ensure_self_correction_payload,
+    extract_goal,
+    extract_input_text,
+    extract_requirements,
+    parse_validation_response,
+    record_validation_result,
+    summarize_history,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Evaluate the latest solution candidate and record validation feedback.\"\"\"
+
+    payload = ensure_self_correction_payload(state)
+    candidate = payload.get("latest_candidate")
+    if not candidate:
+        return state
+
+    goal = extract_goal(state)
+    user_input = extract_input_text(state)
+    requirements = extract_requirements(state)
+    history = summarize_history(payload)
+    directive = {purpose_literal}
+
+    llm = client.get_chat_model()
+    system_prompt = (
+        "You are a meticulous reviewer ensuring the solution fully satisfies the stated requirements."
+    )
+    human_prompt = (
+        "Critically assess the proposed solution. Respond with a JSON object containing the keys "success" and "feedback".\n"
+        "Goal: {{goal}}\n"
+        "Latest user input: {{user_input}}\n"
+        "Requirements to satisfy:\n"
+        "{{requirements}}\n"
+        "Attempt history:\n"
+        "{{history}}\n"
+        "Candidate under review:\n"
+        "{{candidate}}\n"
+        "Validation directive: {{directive}}"
+    ).format(
+        goal=goal,
+        user_input=user_input,
+        requirements=requirements,
+        history=history,
+        candidate=candidate,
+        directive=directive,
+    )
+
+    response = llm.invoke(
+        [
+            SystemMessage(system_prompt),
+            HumanMessage(human_prompt),
+        ]
+    )
+    content = getattr(response, "content", response)
+    text = content if isinstance(content, str) else str(content)
+    parsed = parse_validation_response(text)
+    success = bool(parsed.get("success"))
+    feedback = parsed.get("feedback") or text
+
+    updated = record_validation_result(state, success, feedback, node={label_literal}, raw=text)
+    payload = ensure_self_correction_payload(updated)
+    payload.setdefault("validation", {{}})
+    payload["validation"].setdefault("parsed", {{}})
+    if isinstance(parsed.get("data"), dict):
+        payload["validation"]["parsed"] = parsed["data"]
+    payload["validation"]["raw"] = text
+    return apply_self_correction_payload(updated, payload)
+"""
+    return template.format(
+        sanitized=sanitized,
+        label_literal=label_literal,
+        purpose_literal=purpose_literal,
+    )
+
+def _render_self_correcting_correct(
+    node_id: str,
+    sanitized: str,
+    purpose: str,
+) -> str:
+    label_literal = json.dumps(node_id)
+    purpose_literal = json.dumps(purpose or f"Improve the solution when {node_id} reports issues.")
+    template = """from __future__ import annotations
+
+from typing import Any, Dict
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .self_correction import (
+    DEFAULT_MAX_ATTEMPTS,
+    apply_self_correction_payload,
+    ensure_self_correction_payload,
+    extract_goal,
+    extract_input_text,
+    extract_requirements,
+    register_candidate,
+    summarize_history,
+)
+
+
+def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+    \"\"\"Refine the solution using validator feedback until it passes or retries are exhausted.\"\"\"
+
+    payload = ensure_self_correction_payload(state)
+    if not payload.get("needs_revision"):
+        return state
+
+    attempt = int(payload.get("attempt") or 0)
+    limit = int(payload.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+    if attempt >= limit:
+        return state
+
+    goal = extract_goal(state)
+    user_input = extract_input_text(state)
+    requirements = extract_requirements(state)
+    history = summarize_history(payload)
+    feedback = (payload.get("validation") or {{}}).get("feedback", "")
+    directive = {purpose_literal}
+
+    llm = client.get_chat_model()
+    system_prompt = (
+        "You are a senior engineer correcting flaws identified during validation while preserving strengths of the proposal."
+    )
+    human_prompt = (
+        "Use the validator feedback to improve the solution. Provide the fully revised solution in your reply.\n"
+        "Goal: {{goal}}\n"
+        "Latest user input: {{user_input}}\n"
+        "Requirements to respect:\n"
+        "{{requirements}}\n"
+        "Validator feedback to address:\n"
+        "{{feedback}}\n"
+        "Attempt history:\n"
+        "{{history}}\n"
+        "Revision directive: {{directive}}"
+    ).format(
+        goal=goal,
+        user_input=user_input,
+        requirements=requirements,
+        feedback=feedback or "No feedback provided.",
+        history=history,
+        directive=directive,
+    )
+
+    response = llm.invoke(
+        [
+            SystemMessage(system_prompt),
+            HumanMessage(human_prompt),
+        ]
+    )
+    content = getattr(response, "content", response)
+    candidate = content if isinstance(content, str) else str(content)
+
+    updated = register_candidate(state, candidate, node={label_literal})
+    payload = ensure_self_correction_payload(updated)
+    payload["max_attempts"] = limit
+    return apply_self_correction_payload(updated, payload)
+"""
+    return template.format(
+        sanitized=sanitized,
+        label_literal=label_literal,
+        purpose_literal=purpose_literal,
+    )
+
+def generate_self_correcting_nodes(
+    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]],
+    user_goal: str,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    role_map: Dict[str, Tuple[str, str, Dict[str, Any]]] = {}
+    for node_id, module_name, _, metadata in node_specs:
+        role = _normalize_self_correcting_node_id(node_id)
+        if role and role not in role_map:
+            role_map[role] = (node_id, module_name, metadata)
+
+    required_roles = {"generate", "validate", "correct"}
+    if not required_roles.issubset(role_map):
+        return {}, {}
+
+    generator_id, generator_module, generator_meta = role_map["generate"]
+    validator_id, validator_module, validator_meta = role_map["validate"]
+    corrector_id, corrector_module, corrector_meta = role_map["correct"]
+
+    modules: Dict[str, str] = {
+        generator_module: _render_self_correcting_generate(
+            generator_id,
+            generator_module,
+            _self_correcting_purpose(generator_meta, f"Generate the solution in {generator_id} step."),
+            user_goal,
+        ),
+        validator_module: _render_self_correcting_validate(
+            validator_id,
+            validator_module,
+            _self_correcting_purpose(validator_meta, f"Validate the output created by {generator_id}."),
+        ),
+        corrector_module: _render_self_correcting_correct(
+            corrector_id,
+            corrector_module,
+            _self_correcting_purpose(corrector_meta, f"Improve the solution when {validator_id} reports issues."),
+        ),
+    }
+
+    helpers: Dict[str, str] = {
+        "self_correction.py": SELF_CORRECTING_UTILS_TEMPLATE,
+    }
+
+    return modules, helpers
+
+
 def _write_node_modules(
     base: Path,
     node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]],
@@ -908,6 +1608,29 @@ def _write_node_modules(
 ) -> None:
     agent_dir = base / "src" / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
+
+    self_correcting_modules, self_correcting_helpers = generate_self_correcting_nodes(
+        node_specs,
+        user_goal,
+    )
+
+    for helper_name, helper_source in self_correcting_helpers.items():
+        helper_path = agent_dir / helper_name
+        provided_helper = _get_generated_content(
+            generated,
+            helper_name,
+            f"src/agent/{helper_name}",
+            f"agent/{helper_name}",
+        )
+        if provided_helper is not None:
+            helper_path.write_text(provided_helper, encoding="utf-8")
+            continue
+
+        if not helper_path.exists():
+            helper_path.write_text(helper_source, encoding="utf-8")
+            helper_entry = str(helper_path)
+            if helper_entry not in missing_files:
+                missing_files.append(helper_entry)
 
     tot_utils_prepared = False
 
@@ -922,44 +1645,47 @@ def _write_node_modules(
         destination = agent_dir / filename
 
         if source is None:
-            normalized = _normalize_tot_node_id(node_id)
-            renderer = _TOT_RENDERERS.get(normalized)
-            if renderer is not None:
-                if not tot_utils_prepared:
-                    _ensure_tot_utils(agent_dir, generated)
-                    tot_utils_prepared = True
-                source = renderer(node_id, module_name)
+            if module_name in self_correcting_modules:
+                source = self_correcting_modules[module_name]
             else:
-                purpose = ""
-                node_info = node_details if isinstance(node_details, dict) else {}
-                if node_info:
-                    for key in (
-                        "purpose",
-                        "description",
-                        "objective",
-                        "summary",
-                        "details",
-                        "task",
-                        "responsibility",
-                        "prompt",
-                    ):
-                        value = node_info.get(key)
-                        if not value:
-                            continue
-                        if isinstance(value, (list, tuple)):
-                            candidate = " ".join(
-                                str(item).strip() for item in value if item
-                            ).strip()
-                        else:
-                            candidate = str(value).strip()
-                        if candidate:
-                            purpose = candidate
-                            break
-                source = generate_generic_node_template(
-                    node_id,
-                    purpose or f"Carry out the {node_id} step.",
-                    user_goal,
-                )
+                normalized = _normalize_tot_node_id(node_id)
+                renderer = _TOT_RENDERERS.get(normalized)
+                if renderer is not None:
+                    if not tot_utils_prepared:
+                        _ensure_tot_utils(agent_dir, generated)
+                        tot_utils_prepared = True
+                    source = renderer(node_id, module_name)
+                else:
+                    purpose = ""
+                    node_info = node_details if isinstance(node_details, dict) else {}
+                    if node_info:
+                        for key in (
+                            "purpose",
+                            "description",
+                            "objective",
+                            "summary",
+                            "details",
+                            "task",
+                            "responsibility",
+                            "prompt",
+                        ):
+                            value = node_info.get(key)
+                            if not value:
+                                continue
+                            if isinstance(value, (list, tuple)):
+                                candidate = " ".join(
+                                    str(item).strip() for item in value if item
+                                ).strip()
+                            else:
+                                candidate = str(value).strip()
+                            if candidate:
+                                purpose = candidate
+                                break
+                    source = generate_generic_node_template(
+                        node_id,
+                        purpose or f"Carry out the {node_id} step.",
+                        user_goal,
+                    )
             missing_entry = str(destination)
             if missing_entry not in missing_files:
                 missing_files.append(missing_entry)
@@ -1130,6 +1856,7 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
         "import json",
         "import logging",
         "import os",
+        "import re",
         "import sqlite3",
         "import sys  # required for runtime argv detection",
         "from typing import Any, Callable, Dict, Iterable, List, Tuple",
@@ -1168,6 +1895,106 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             ")",
             "",
             "logger = logging.getLogger(__name__)",
+            "",
+            "",
+        ]
+    )
+
+    lines.extend(
+        [
+            "def _normalize_self_correcting_node_id(node_id: str) -> str | None:",
+            "    if not isinstance(node_id, str):",
+            "        return None",
+            "    normalized = re.sub(r'[^a-z0-9]+', '_', node_id.lower()).strip('_')",
+            "    if not normalized:",
+            "        return None",
+            "    mappings = {",
+            "        'generate': {'generate', 'generator', 'draft', 'proposal', 'produce', 'create', 'initial'},",
+            "        'validate': {'validate', 'validation', 'verify', 'critique', 'review', 'assess', 'check', 'score'},",
+            "        'correct': {'correct', 'correction', 'fix', 'repair', 'revise', 'refine', 'improve', 'update'},",
+            "    }",
+            "    for role, aliases in mappings.items():",
+            "        for alias in aliases:",
+            "            if normalized == alias or normalized.startswith(f'{alias}_') or normalized.endswith(f'_{alias}'):",
+            "                return role",
+            "    return None",
+            "",
+            "",
+            "def _get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "    if not isinstance(state, dict):",
+            "        return {}",
+            "    scaffold = state.get('scaffold')",
+            "    if isinstance(scaffold, dict):",
+            "        payload = scaffold.get('self_correction')",
+            "        if isinstance(payload, dict):",
+            "            return payload",
+            "    return {}",
+            "",
+            "",
+            "def _should_retry_self_correction(state: Dict[str, Any], limit: int | None = None) -> bool:",
+            "    payload = _get_self_correction_payload(state)",
+            "    if not payload.get('needs_revision'):",
+            "        return False",
+            "    attempt = int(payload.get('attempt') or 0)",
+            "    try:",
+            "        max_attempts = int(limit or payload.get('max_attempts') or 3)",
+            "    except Exception:",
+            "        max_attempts = 3",
+            "    return attempt < max_attempts",
+            "",
+            "",
+            "def generate_self_correcting_nodes(",
+            "    pattern: Dict[str, Any],",
+            "    registered_nodes: Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]],",
+            ") -> List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:",
+            "    ordered = list(registered_nodes)",
+            "    lookup: Dict[str, Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = {}",
+            "    for node_id, handler in ordered:",
+            "        role = _normalize_self_correcting_node_id(node_id)",
+            "        if role and role not in lookup:",
+            "            lookup[role] = (node_id, handler)",
+            "    if not {'generate', 'validate', 'correct'}.issubset(lookup):",
+            "        return ordered",
+            "    generate_id, generate_handler = lookup['generate']",
+            "    validate_id, validate_handler = lookup['validate']",
+            "    correct_id, correct_handler = lookup['correct']",
+            "    config = pattern if isinstance(pattern, dict) else {}",
+            "    if isinstance(pattern, dict):",
+            "        arch = pattern.get('architecture')",
+            "        if isinstance(arch, dict):",
+            "            config = arch",
+            "    max_attempts = None",
+            "    if isinstance(config, dict):",
+            "        for key in ('max_attempts', 'retry_limit', 'max_retries'):",
+            "            value = config.get(key)",
+            "            if isinstance(value, int) and value > 0:",
+            "                max_attempts = value",
+            "                break",
+            "    def generator_node(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "        payload = _get_self_correction_payload(state)",
+            "        if payload.get('attempt') and not payload.get('needs_revision'):",
+            "            return state",
+            "        return generate_handler(state)",
+            "",
+            "    def validator_node(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "        return validate_handler(state)",
+            "",
+            "    def corrector_node(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "        current = state",
+            "        safety = 0",
+            "        while _should_retry_self_correction(current, max_attempts):",
+            "            current = correct_handler(current)",
+            "            current = validate_handler(current)",
+            "            safety += 1",
+            "            if safety > 10:",
+            "                break",
+            "        return current",
+            "",
+            "    return [",
+            "        (generate_id, generator_node),",
+            "        (validate_id, validator_node),",
+            "        (correct_id, corrector_node),",
+            "    ]",
             "",
             "",
             "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = [",
@@ -1290,6 +2117,15 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    available = list(registered_nodes)",
             "    if not available:",
             "        return []",
+            "    pattern_name = ''",
+            "    if isinstance(pattern, dict):",
+            "        raw_name = pattern.get('name') or pattern.get('pattern')",
+            "        if isinstance(raw_name, str):",
+            "            pattern_name = raw_name.strip().lower()",
+            "    if pattern_name == 'self_correcting_generation':",
+            "        adaptive = generate_self_correcting_nodes(pattern, available)",
+            "        if adaptive:",
+            "            return adaptive",
             "    selected: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = []",
             "    for node_id in requested_ids:",
             "        for candidate_id, handler in available:",

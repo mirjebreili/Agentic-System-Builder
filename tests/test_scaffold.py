@@ -423,3 +423,55 @@ def test_scaffold_project_generates_tot_templates(tmp_path, monkeypatch):
     finally:
         if project_dir.exists():
             shutil.rmtree(project_dir)
+
+
+def test_scaffold_project_generates_self_correcting_nodes(tmp_path, monkeypatch):
+    monkeypatch.setattr(scaffold, "ROOT", tmp_path)
+    _write_template_files(tmp_path)
+
+    architecture = {
+        "workflow_pattern": "self_correcting_generation",
+        "graph_structure": [
+            {"id": "generate_solution"},
+            {"id": "validate_solution"},
+            {"id": "correct_solution"},
+        ],
+    }
+
+    state = {
+        "plan": {"goal": "Self Correcting Agent"},
+        "architecture": architecture,
+    }
+
+    result = scaffold.scaffold_project(state)
+    project_dir = Path(result["scaffold"]["path"])
+
+    try:
+        agent_dir = project_dir / "src" / "agent"
+        utils_path = agent_dir / "self_correction.py"
+        assert utils_path.exists()
+        utils_text = utils_path.read_text(encoding="utf-8")
+        assert "DEFAULT_MAX_ATTEMPTS" in utils_text
+        assert "def register_candidate" in utils_text
+        assert "def record_validation_result" in utils_text
+        assert "def parse_validation_response" in utils_text
+
+        generate_text = (agent_dir / "generate_solution.py").read_text(encoding="utf-8")
+        assert "from .self_correction import" in generate_text
+        assert "register_candidate" in generate_text
+        assert "SystemMessage" in generate_text
+
+        validate_text = (agent_dir / "validate_solution.py").read_text(encoding="utf-8")
+        assert "parse_validation_response" in validate_text
+        assert "record_validation_result" in validate_text
+
+        correct_text = (agent_dir / "correct_solution.py").read_text(encoding="utf-8")
+        assert "DEFAULT_MAX_ATTEMPTS" in correct_text
+        assert "register_candidate" in correct_text
+
+        graph_text = (agent_dir / "graph.py").read_text(encoding="utf-8")
+        assert "def generate_self_correcting_nodes" in graph_text
+        assert "pattern_name == 'self_correcting_generation'" in graph_text
+    finally:
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
