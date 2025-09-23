@@ -1,7 +1,15 @@
 from __future__ import annotations
-import json, os, re, shutil, logging, math
+import json, os, re, logging, math
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from asb.scaffold.build_nodes import (
+    SCAFFOLD_BASE_PATH_KEY,
+    SCAFFOLD_ROOT_KEY,
+    copy_base_files,
+    init_project_structure,
+    write_config_files,
+)
 
 
 _BASE_STATE_FIELDS: List[tuple[str, str]] = [
@@ -3113,74 +3121,24 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
     if not user_goal:
         user_goal = "Complete the requested task."
     base = ROOT / "projects" / name
-    base.mkdir(parents=True, exist_ok=True)
-    (base / "prompts").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "agent").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "config").mkdir(parents=True, exist_ok=True)
-    (base / "src" / "llm").mkdir(parents=True, exist_ok=True)
-    (base / "tests").mkdir(parents=True, exist_ok=True)
-    (base / "reports").mkdir(parents=True, exist_ok=True)
-
-    for package_dir in ("src", "src/agent", "src/llm", "src/config"):
-        init_path = base / package_dir / "__init__.py"
-        init_path.parent.mkdir(parents=True, exist_ok=True)
-        if not init_path.exists():
-            init_path.write_text("", encoding="utf-8")
-
-    # langgraph.json
-    (base / "langgraph.json").write_text(
-        json.dumps({"graphs": {"agent": "src.agent.graph:graph"},
-                    "dependencies": ["."], "env": "./.env"}, indent=2), encoding="utf-8")
-
-    # pyproject.toml
-    (base / "pyproject.toml").write_text("""[project]
-name = "generated-agent"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-  "langgraph>=0.6,<0.7",
-  "langchain-core>=0.3,<0.4",
-  "langchain-openai>=0.3,<0.4",
-  "pydantic>=2.7,<3",
-  "langgraph-checkpoint-sqlite>=2.0.0",
-  "aiosqlite>=0.17.0",
-  "pytest>=7.0.0",
-  "langgraph-cli[inmem]>=0.1.0",
-  "requests>=2.25.0",
-  "black>=22.0.0",
-  "isort>=5.0.0",
-  "mypy>=1.0.0",
-  "bandit[toml]>=1.7.0",
-]
-[build-system]
-requires = ["setuptools","wheel"]
-build-backend = "setuptools.build_meta"
-[tool.setuptools.packages.find]
-where = ["src"]
-""", encoding="utf-8")
-
-    # .env.example
-    src_env = ROOT / ".env.example"
-    if src_env.exists():
-        shutil.copy(src_env, base / ".env.example")
-
-    # copy minimal settings, client, state, and prompt utilities
-    files = {
-        "src/config/settings.py": "src/config/settings.py",
-        "src/asb/llm/client.py": "src/llm/client.py",
-        "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
-    }
-    missing_files = []
+    missing_files: List[str] = []
     scaffold_errors: List[str] = []
-    for src_rel, dest_rel in files.items():
-        dst = base / dest_rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        src_path = ROOT / src_rel
-        if src_path.exists():
-            shutil.copy(src_path, dst)
-        else:
-            missing_files.append(str(src_path))
-            print(f"Template file missing, skipping: {src_path}")
+
+    state[SCAFFOLD_BASE_PATH_KEY] = base
+    state[SCAFFOLD_ROOT_KEY] = ROOT
+    try:
+        init_project_structure(state)
+        for package_dir in ("src", "src/agent", "src/llm", "src/config"):
+            init_path = base / package_dir / "__init__.py"
+            init_path.parent.mkdir(parents=True, exist_ok=True)
+            if not init_path.exists():
+                init_path.write_text("", encoding="utf-8")
+
+        write_config_files(state)
+        missing_files = copy_base_files(state)
+    finally:
+        state.pop(SCAFFOLD_BASE_PATH_KEY, None)
+        state.pop(SCAFFOLD_ROOT_KEY, None)
 
     normalized_generated = {
         _normalize_generated_key(key): value
