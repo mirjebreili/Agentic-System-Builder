@@ -73,6 +73,10 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert "from langgraph.checkpoint.sqlite import SqliteSaver" in graph_contents
         assert "from .state import AppState" in graph_contents
         assert "StateGraph(AppState)" in graph_contents
+        assert "ARCHITECTURE_STATE = json.loads" in graph_contents
+        assert "def analyze_workflow_pattern" in graph_contents
+        assert "def generate_dynamic_workflow" in graph_contents
+        assert "graph = generate_dynamic_workflow()" in graph_contents
 
         langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
         assert langgraph_config["graphs"]["agent"] == "src.agent.graph:graph"
@@ -200,9 +204,9 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
         assert "from .entry import run as entry" in graph_text
         assert "from .analyze import analyze" in graph_text
         assert "from .design import run_design as design" in graph_text
-        assert "g.add_node('entry', entry)" in graph_text
-        assert "g.add_edge(START, 'entry')" in graph_text
-        assert "g.add_edge('entry', 'finish')" in graph_text
+        assert "ARCHITECTURE_STATE = json.loads" in graph_text
+        assert "def create_dynamic_graph" in graph_text
+        assert "graph = generate_dynamic_workflow()" in graph_text
 
         monkeypatch.syspath_prepend(str(project_dir))
         monkeypatch.setenv("LANGGRAPH_ENV", "cloud")
@@ -242,15 +246,37 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
             dummy = DummyStateGraph.last_instance
             assert dummy is not None
             assert dummy.nodes == ["entry", "analyze", "design", "finish"]
-            expected_edges = [
+            expected_edges = {
                 (langgraph_graph.START, "entry"),
                 ("entry", "analyze"),
                 ("analyze", "design"),
                 ("design", "finish"),
                 ("entry", "finish"),
                 ("finish", langgraph_graph.END),
-            ]
-            assert dummy.edges == expected_edges
+            }
+            assert set(dummy.edges) == expected_edges
+
+            DummyStateGraph.last_instance = None
+            alt_state = {
+                "architecture": {
+                    "nodes": [
+                        {"id": "entry"},
+                        {"id": "finish"},
+                    ],
+                    "edges": [
+                        {"from": "entry", "to": "finish"},
+                    ],
+                }
+            }
+            graph_module.generate_dynamic_workflow(alt_state)
+            alt_dummy = DummyStateGraph.last_instance
+            assert alt_dummy is not None
+            assert alt_dummy.nodes == ["entry", "finish"]
+            assert set(alt_dummy.edges) == {
+                (langgraph_graph.START, "entry"),
+                ("entry", "finish"),
+                ("finish", langgraph_graph.END),
+            }
 
             executor_module = importlib.import_module("src.agent.executor")
             node_order = [node_id for node_id, _ in executor_module.NODE_IMPLEMENTATIONS]

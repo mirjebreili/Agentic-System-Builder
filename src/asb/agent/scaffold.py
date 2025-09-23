@@ -1062,8 +1062,8 @@ def _extract_edge_endpoint(value: Any) -> str | None:
     return candidate
 
 
-def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
-    """Render a graph module that wires nodes per the architecture plan."""
+def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
+    """Render a graph module that synthesizes workflows at runtime."""
 
     node_definitions: List[Dict[str, str]] = []
     raw_defs = architecture_plan.get("_node_definitions")
@@ -1108,18 +1108,34 @@ def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
                     }
                 )
 
+    architecture_payload: Dict[str, Any] = {}
+    if isinstance(architecture_plan, dict):
+        architecture_payload = {
+            key: value
+            for key, value in architecture_plan.items()
+            if key != "_node_definitions"
+        }
+
+    architecture_json = json.dumps(
+        architecture_payload or {},
+        indent=4,
+        sort_keys=True,
+        default=str,
+    )
+
     lines: List[str] = [
         "# generated",
         "from __future__ import annotations",
         "",
+        "import json",
         "import logging",
         "import os",
         "import sqlite3",
         "import sys  # required for runtime argv detection",
-        "from typing import Any, Dict",
+        "from typing import Any, Callable, Dict, Iterable, List, Tuple",
         "",
         "from langgraph.checkpoint.sqlite import SqliteSaver",
-        "from langgraph.graph import StateGraph, START, END",
+        "from langgraph.graph import END, START, StateGraph",
         "",
         "from .state import AppState",
     ]
@@ -1138,7 +1154,45 @@ def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "ARCHITECTURE_STATE = json.loads(",
+            "    \"\"\"",
+        ]
+    )
+
+    for architecture_line in architecture_json.splitlines():
+        lines.append(f"    {architecture_line}")
+
+    lines.extend(
+        [
+            "    \"\"\"",
+            ")",
+            "",
             "logger = logging.getLogger(__name__)",
+            "",
+            "",
+            "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = [",
+        ]
+    )
+
+    for entry in node_definitions:
+        alias = entry.get("alias") or entry["module"]
+        lines.append(f"    ({entry['id']!r}, {alias}),")
+
+    lines.extend(
+        [
+            "]",
+            "",
+            "",
+            "def iter_node_callables() -> Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:",
+            "    for spec in NODE_IMPLEMENTATIONS:",
+            "        yield spec",
+            "",
+            "",
+            "def execute(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "    current = state",
+            "    for _, node_callable in NODE_IMPLEMENTATIONS:",
+            "        current = node_callable(current)",
+            "    return current",
             "",
             "",
             "def running_on_langgraph_api() -> bool:",
@@ -1151,89 +1205,201 @@ def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
             "    return '--langgraph-api' in argv or ('langgraph' in argv and 'api' in argv)",
             "",
             "",
-            "def _make_graph(path: str | None = None):",
-            "    g = StateGraph(AppState)",
-        ]
-    )
-
-    node_ids = [entry["id"] for entry in node_definitions]
-    node_id_set = set(node_ids)
-
-    for entry in node_definitions:
-        alias = entry.get("alias") or entry["module"]
-        lines.append(f"    g.add_node({entry['id']!r}, {alias})")
-
-    edges_added: set[tuple[str, str]] = set()
-
-    def _append_edge(source: str, target: str) -> None:
-        key = (source, target)
-        if key in edges_added:
-            return
-        edges_added.add(key)
-        lines.append(f"    g.add_edge({_format_edge_endpoint(source)}, {_format_edge_endpoint(target)})")
-
-    raw_edges = architecture_plan.get("edges")
-    parsed_edges: List[tuple[str, str]] = []
-    if isinstance(raw_edges, list):
-        for entry in raw_edges:
-            if not isinstance(entry, dict):
-                continue
-            source = (
-                entry.get("from")
-                or entry.get("source")
-                or entry.get("start")
-                or entry.get("src")
-            )
-            target = entry.get("to") or entry.get("target") or entry.get("end") or entry.get("dst")
-            source_name = _extract_edge_endpoint(source)
-            target_name = _extract_edge_endpoint(target)
-            if source_name is None or target_name is None:
-                continue
-            parsed_edges.append((source_name, target_name))
-
-    if node_ids:
-        _append_edge("START", node_ids[0])
-        if parsed_edges:
-            for source_name, target_name in parsed_edges:
-                source_upper = source_name.upper()
-                target_upper = target_name.upper()
-                if source_upper not in {"START"} and source_name not in node_id_set:
-                    continue
-                if target_upper not in {"END"} and target_name not in node_id_set:
-                    continue
-                _append_edge(source_name, target_name)
-        else:
-            previous = node_ids[0]
-            for node_id in node_ids[1:]:
-                _append_edge(previous, node_id)
-                previous = node_id
-        _append_edge(node_ids[-1], "END")
-    else:
-        _append_edge("START", "END")
-
-    lines.extend(
-        [
+            "def analyze_workflow_pattern(state: Dict[str, Any] | None = None) -> Dict[str, Any]:",
+            "    architecture: Dict[str, Any] = {}",
+            "    if isinstance(state, dict):",
+            "        candidate = state.get('architecture')",
+            "        if isinstance(candidate, dict):",
+            "            architecture = dict(candidate)",
+            "        else:",
+            "            plan_candidate = state.get('plan')",
+            "            if isinstance(plan_candidate, dict):",
+            "                nested = plan_candidate.get('architecture')",
+            "                if isinstance(nested, dict):",
+            "                    architecture = dict(nested)",
+            "    if not architecture:",
+            "        if isinstance(ARCHITECTURE_STATE, dict):",
+            "            architecture = dict(ARCHITECTURE_STATE)",
+            "        else:",
+            "            architecture = {}",
+            "    pattern_name = architecture.get('workflow_pattern') or architecture.get('pattern') or architecture.get('default_pattern')",
+            "    if isinstance(pattern_name, str):",
+            "        pattern_name = pattern_name.strip() or None",
+            "    raw_sequence = architecture.get('workflow_sequence')",
+            "    ordered_nodes: List[str] = []",
+            "    if isinstance(raw_sequence, list):",
+            "        for entry in raw_sequence:",
+            "            if isinstance(entry, str):",
+            "                candidate = entry.strip()",
+            "            elif isinstance(entry, dict):",
+            "                candidate = str(entry.get('id') or entry.get('name') or entry.get('label') or '').strip()",
+            "            else:",
+            "                candidate = str(entry).strip()",
+            "            if candidate:",
+            "                ordered_nodes.append(candidate)",
+            "    if not ordered_nodes:",
+            "        raw_nodes = architecture.get('nodes') or architecture.get('graph_structure') or []",
+            "        if isinstance(raw_nodes, list):",
+            "            for entry in raw_nodes:",
+            "                if isinstance(entry, dict):",
+            "                    candidate = entry.get('id') or entry.get('name') or entry.get('label')",
+            "                    candidate = str(candidate).strip() if candidate is not None else ''",
+            "                else:",
+            "                    candidate = str(entry).strip()",
+            "                if candidate:",
+            "                    ordered_nodes.append(candidate)",
+            "    raw_edges = architecture.get('edges')",
+            "    edges: List[Tuple[str, str]] = []",
+            "    if isinstance(raw_edges, list):",
+            "        for entry in raw_edges:",
+            "            if isinstance(entry, dict):",
+            "                source = entry.get('from') or entry.get('source') or entry.get('start') or entry.get('src')",
+            "                target = entry.get('to') or entry.get('target') or entry.get('end') or entry.get('dst')",
+            "            elif isinstance(entry, (list, tuple)) and len(entry) == 2:",
+            "                source, target = entry",
+            "            else:",
+            "                continue",
+            "            source_name = str(source).strip() if source is not None else ''",
+            "            target_name = str(target).strip() if target is not None else ''",
+            "            if source_name and target_name:",
+            "                edges.append((source_name, target_name))",
+            "    return {",
+            "        'name': pattern_name or 'sequential',",
+            "        'ordered_nodes': ordered_nodes,",
+            "        'edges': edges,",
+            "        'architecture': architecture,",
+            "    }",
             "",
+            "",
+            "def generate_adaptive_nodes(",
+            "    pattern: Dict[str, Any],",
+            "    registered_nodes: Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]],",
+            ") -> List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:",
+            "    requested = pattern.get('ordered_nodes')",
+            "    requested_ids: List[str] = []",
+            "    if isinstance(requested, list):",
+            "        for entry in requested:",
+            "            if isinstance(entry, str):",
+            "                candidate = entry.strip()",
+            "            elif isinstance(entry, dict):",
+            "                candidate = str(entry.get('id') or entry.get('name') or entry.get('label') or '').strip()",
+            "            else:",
+            "                candidate = str(entry).strip()",
+            "            if candidate:",
+            "                requested_ids.append(candidate)",
+            "    available = list(registered_nodes)",
+            "    if not available:",
+            "        return []",
+            "    selected: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = []",
+            "    for node_id in requested_ids:",
+            "        for candidate_id, handler in available:",
+            "            if candidate_id == node_id:",
+            "                selected.append((candidate_id, handler))",
+            "                break",
+            "    if selected:",
+            "        return selected",
+            "    return available",
+            "",
+            "",
+            "def create_dynamic_graph(",
+            "    pattern: Dict[str, Any],",
+            "    node_sequence: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]],",
+            "    *,",
+            "    path: str | None = None,",
+            "):",
+            "    graph = StateGraph(AppState)",
+            "    ordered_ids = [node_id for node_id, _ in node_sequence]",
+            "    for node_id, node_callable in node_sequence:",
+            "        graph.add_node(node_id, node_callable)",
+            "    normalized_edges = pattern.get('edges') or []",
+            "    edges: List[Tuple[str, str]] = []",
+            "    if isinstance(normalized_edges, list):",
+            "        for entry in normalized_edges:",
+            "            if isinstance(entry, tuple) and len(entry) == 2:",
+            "                source, target = entry",
+            "            elif isinstance(entry, list) and len(entry) == 2:",
+            "                source, target = entry",
+            "            else:",
+            "                try:",
+            "                    source, target = entry",
+            "                except Exception:",
+            "                    continue",
+            "            source_name = str(source).strip()",
+            "            target_name = str(target).strip()",
+            "            if source_name and target_name:",
+            "                edges.append((source_name, target_name))",
+            "    if not edges:",
+            "        previous: str | None = None",
+            "        for node_id in ordered_ids:",
+            "            if previous is None:",
+            "                graph.add_edge(START, node_id)",
+            "            else:",
+            "                graph.add_edge(previous, node_id)",
+            "            previous = node_id",
+            "        if previous is None:",
+            "            graph.add_edge(START, END)",
+            "        else:",
+            "            graph.add_edge(previous, END)",
+            "    else:",
+            "        start_connected = False",
+            "        outgoing: set[str] = set()",
+            "        for source_name, target_name in edges:",
+            "            source_upper = source_name.upper()",
+            "            target_upper = target_name.upper()",
+            "            if source_upper == 'END':",
+            "                continue",
+            "            if source_upper == 'START':",
+            "                if target_name in ordered_ids:",
+            "                    graph.add_edge(START, target_name)",
+            "                    start_connected = True",
+            "                continue",
+            "            if source_name not in ordered_ids:",
+            "                continue",
+            "            if target_upper == 'END':",
+            "                graph.add_edge(source_name, END)",
+            "                outgoing.add(source_name)",
+            "                continue",
+            "            if target_name not in ordered_ids:",
+            "                continue",
+            "            graph.add_edge(source_name, target_name)",
+            "            outgoing.add(source_name)",
+            "        if not start_connected and ordered_ids:",
+            "            graph.add_edge(START, ordered_ids[0])",
+            "        for node_id in ordered_ids:",
+            "            if node_id not in outgoing:",
+            "                graph.add_edge(node_id, END)",
             "    if running_on_langgraph_api():",
             "        logger.info('LangGraph API runtime detected; compiling without a checkpointer.')",
-            "        return g.compile(checkpointer=None)",
-            "",
+            "        return graph.compile(checkpointer=None)",
             "    checkpointer = None",
             "    if path:",
-            "        dir_path = os.path.dirname(path)",
-            "        if dir_path:",
-            "            os.makedirs(dir_path, exist_ok=True)",
+            "        directory = os.path.dirname(path)",
+            "        if directory:",
+            "            os.makedirs(directory, exist_ok=True)",
             "        connection = sqlite3.connect(path, check_same_thread=False)",
             "        checkpointer = SqliteSaver(connection)",
+            "    return graph.compile(checkpointer=checkpointer)",
             "",
-            "    return g.compile(checkpointer=checkpointer)",
+            "",
+            "def generate_dynamic_workflow(",
+            "    state: Dict[str, Any] | None = None,",
+            "    *,",
+            "    path: str | None = None,",
+            "):",
+            "    pattern = analyze_workflow_pattern(state)",
+            "    node_sequence = generate_adaptive_nodes(pattern, NODE_IMPLEMENTATIONS)",
+            "    return create_dynamic_graph(pattern, node_sequence, path=path)",
             "",
             "",
-            "graph = _make_graph()",
+            "graph = generate_dynamic_workflow()",
         ]
     )
 
     return "\n".join(lines) + "\n"
+
+
+def generate_dynamic_graph(architecture_plan: Dict[str, Any]) -> str:
+    return generate_dynamic_workflow_module(architecture_plan)
 
 
 def _render_graph_module() -> str:
@@ -1587,7 +1753,7 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
     graph_plan["_node_definitions"] = node_definitions
 
     if graph_source is None:
-        graph_source = generate_dynamic_graph(graph_plan)
+        graph_source = generate_dynamic_workflow_module(graph_plan)
 
     (base / "src/agent/graph.py").write_text(graph_source, encoding="utf-8")
 
