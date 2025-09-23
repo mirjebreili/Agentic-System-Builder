@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, re, shutil
+import json, os, re, shutil, logging, math
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -193,6 +193,9 @@ STATE_TEMPLATE = generate_enhanced_state_schema({})
 
 # repository root
 ROOT = Path(__file__).resolve().parents[3]
+
+
+logger = logging.getLogger(__name__)
 
 def _slug(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+","-", s.strip())
@@ -2168,12 +2171,59 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             if key != "_node_definitions"
         }
 
-    architecture_json = json.dumps(
-        architecture_payload or {},
-        indent=4,
-        sort_keys=True,
-        default=str,
-    )
+    def _normalize_json_value(value: Any) -> Any:
+        """Recursively sanitize values so they can be serialized to JSON."""
+
+        if isinstance(value, dict):
+            return {str(key): _normalize_json_value(val) for key, val in value.items()}
+
+        if isinstance(value, (list, tuple, set)):
+            return [_normalize_json_value(item) for item in value]
+
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return value
+
+        if isinstance(value, (int, str, bool)) or value is None:
+            return value
+
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                return value.decode("utf-8")
+            except Exception:
+                return value.decode("utf-8", errors="ignore")
+
+        return str(value)
+
+    raw_payload = architecture_payload or {}
+
+    try:
+        architecture_json = json.dumps(
+            raw_payload,
+            indent=4,
+            sort_keys=True,
+            default=str,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        normalized_payload = _normalize_json_value(raw_payload)
+        try:
+            architecture_json = json.dumps(
+                normalized_payload,
+                indent=4,
+                sort_keys=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning("Unable to serialize architecture plan: %s", exc)
+            architecture_json = "{}"
+
+    try:
+        json.loads(architecture_json)
+    except json.JSONDecodeError as exc:
+        logger.warning("Invalid architecture JSON detected: %s", exc)
+        architecture_json = "{}"
 
     lines: List[str] = [
         "# generated",
