@@ -197,6 +197,91 @@ ROOT = Path(__file__).resolve().parents[3]
 
 logger = logging.getLogger(__name__)
 
+LLM_USAGE_CUES: Tuple[str, ...] = (
+    "client.get_chat_model",
+    "client.get_completion_model",
+    "client.invoke(",
+    "client.ainvoke(",
+)
+
+
+def _append_scaffold_error(errors: List[str], module_name: str, message: str) -> None:
+    entry = f"{module_name}: {message}" if module_name else message
+    if entry not in errors:
+        errors.append(entry)
+
+
+def _validate_node_module(
+    module_path: Path,
+    node_id: str,
+    module_name: str,
+    user_goal: str,
+    errors: List[str],
+    *,
+    allow_regenerate: bool,
+) -> None:
+    identifier = module_name or node_id or module_path.stem
+
+    try:
+        contents = module_path.read_text(encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - filesystem errors are rare
+        _append_scaffold_error(errors, identifier, f"unable to read node file for validation: {exc}")
+        return
+
+    if not contents.strip():
+        _append_scaffold_error(errors, identifier, "node file is empty after write")
+        if allow_regenerate:
+            regenerated = generate_generic_node_template(
+                node_id or identifier,
+                f"Carry out the {node_id or identifier} step.",
+                user_goal,
+            )
+            module_path.write_text(regenerated, encoding="utf-8")
+            _validate_node_module(
+                module_path,
+                node_id,
+                module_name,
+                user_goal,
+                errors,
+                allow_regenerate=False,
+            )
+        return
+
+    required_imports = (
+        "from .state import AppState",
+        "from ..llm import client",
+    )
+    missing_imports = [imp for imp in required_imports if imp not in contents]
+    if missing_imports:
+        _append_scaffold_error(
+            errors,
+            identifier,
+            f"missing required imports: {', '.join(missing_imports)}",
+        )
+        if allow_regenerate:
+            regenerated = generate_generic_node_template(
+                node_id or identifier,
+                f"Carry out the {node_id or identifier} step.",
+                user_goal,
+            )
+            module_path.write_text(regenerated, encoding="utf-8")
+            _validate_node_module(
+                module_path,
+                node_id,
+                module_name,
+                user_goal,
+                errors,
+                allow_regenerate=False,
+            )
+            return
+
+    if not any(cue in contents for cue in LLM_USAGE_CUES):
+        cues_text = ", ".join(LLM_USAGE_CUES)
+        _append_scaffold_error(
+            errors,
+            identifier,
+            f"missing LLM client usage (expected one of: {cues_text})",
+        )
 def _slug(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+","-", s.strip())
     return s.strip("-").lower() or "project"
@@ -804,7 +889,7 @@ def generate_generic_node_template(
     ]
 
     node_lines = [
-        f"def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:",
+        f"def {sanitized}(state: AppState) -> AppState:",
         f"    \"\"\"Adaptive implementation for the '{node_label}' node.\"\"\"",
         "",
         "    llm = client.get_chat_model()",
@@ -920,6 +1005,7 @@ def generate_generic_node_template(
         "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
         "",
         "from ..llm import client",
+        "from .state import AppState",
         "",
         _dict_literal("ROLE_SYSTEM_PROMPTS", role_system_prompts),
         "",
@@ -961,6 +1047,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .utils import (
     capture_tot_error,
     extract_goal,
@@ -970,7 +1057,7 @@ from .utils import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Generate diverse approaches for tree-of-thought reasoning.\"\"\"
 
     try:
@@ -1012,6 +1099,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .utils import (
     capture_tot_error,
     extract_goal,
@@ -1022,7 +1110,7 @@ from .utils import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Score generated thoughts to inform downstream selection.\"\"\"
 
     thoughts = get_thoughts(state)
@@ -1109,8 +1197,14 @@ def _render_select_best_thought(node_id: str, sanitized: str) -> str:
 
 from typing import Any, Dict
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from ..llm import client
+from .state import AppState
 from .utils import (
     capture_tot_error,
+    extract_goal,
+    extract_input_text,
     get_evaluations,
     get_thoughts,
     select_top_evaluation,
@@ -1118,28 +1212,63 @@ from .utils import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Choose the most promising thought for finalization.\"\"\"
 
     try:
         evaluations = get_evaluations(state)
+        selection_source = "evaluation"
         if evaluations:
             selected = select_top_evaluation(evaluations)
             if not selected:
                 raise ValueError("Evaluations were present but no selection could be made.")
-            return update_tot_state(state, {{"selected_thought": selected}})
+        else:
+            thoughts = get_thoughts(state)
+            if not thoughts:
+                raise ValueError("No thoughts available to select from.")
 
-        thoughts = get_thoughts(state)
-        if not thoughts:
-            raise ValueError("No thoughts available to select from.")
+            selection_source = "fallback"
+            selected = {{
+                "index": 1,
+                "thought": thoughts[0],
+                "score": 0.0,
+                "reasoning": "Defaulted to the first thought due to missing evaluations.",
+            }}
 
-        fallback = {{
-            "index": 1,
-            "thought": thoughts[0],
-            "score": 0.0,
-            "reasoning": "Defaulted to the first thought due to missing evaluations.",
+        goal = extract_goal(state)
+        user_input = extract_input_text(state)
+        if isinstance(selected, dict):
+            thought_text = str(selected.get("thought") or "")
+        else:
+            thought_text = str(selected)
+
+        llm = client.get_chat_model()
+        system_prompt = (
+            "You are a reasoning assistant summarizing why a tree-of-thought option was selected."
+        )
+        human_prompt = (
+            "Provide a concise justification for the chosen thought.\\n"
+            f"Goal: {{goal}}\\n"
+            f"Latest user input: {{user_input}}\\n"
+            f"Selection source: {{source}}\\n"
+            f"Chosen thought: {{thought}}\\n"
+            "Respond with 1-2 sentences highlighting why this thought is the best next step."
+        ).format(
+            goal=goal,
+            user_input=user_input,
+            source=selection_source,
+            thought=thought_text,
+        )
+        response = llm.invoke([SystemMessage(system_prompt), HumanMessage(human_prompt)])
+        content = getattr(response, "content", response)
+        summary_text = content if isinstance(content, str) else str(content)
+
+        payload = {{
+            "selected_thought": selected,
+            "selection_summary": summary_text,
+            "selection_source": selection_source,
         }}
-        return update_tot_state(state, {{"selected_thought": fallback}})
+        return update_tot_state(state, payload)
     except Exception as exc:
         return capture_tot_error(state, "{sanitized}", exc)
 """
@@ -1153,6 +1282,7 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .utils import (
     capture_tot_error,
     extract_goal,
@@ -1162,7 +1292,7 @@ from .utils import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Produce the final assistant response using the selected thought.\"\"\"
 
     selected = get_selected_thought(state)
@@ -1627,6 +1757,7 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .self_correction import (
     DEFAULT_MAX_ATTEMPTS,
     apply_self_correction_payload,
@@ -1639,7 +1770,7 @@ from .self_correction import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Generate or regenerate the working solution candidate.\"\"\"
 
     payload = ensure_self_correction_payload(state)
@@ -1711,6 +1842,7 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .self_correction import (
     apply_self_correction_payload,
     ensure_self_correction_payload,
@@ -1723,7 +1855,7 @@ from .self_correction import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Evaluate the latest solution candidate and record validation feedback.\"\"\"
 
     payload = ensure_self_correction_payload(state)
@@ -1802,6 +1934,7 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..llm import client
+from .state import AppState
 from .self_correction import (
     DEFAULT_MAX_ATTEMPTS,
     apply_self_correction_payload,
@@ -1814,7 +1947,7 @@ from .self_correction import (
 )
 
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
+def {sanitized}(state: AppState) -> AppState:
     \"\"\"Refine the solution using validator feedback until it passes or retries are exhausted.\"\"\"
 
     payload = ensure_self_correction_payload(state)
@@ -1927,6 +2060,7 @@ def _write_node_modules(
     generated: Dict[str, str],
     missing_files: List[str],
     user_goal: str,
+    errors: List[str],
 ) -> None:
     agent_dir = base / "src" / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -1972,8 +2106,10 @@ def _write_node_modules(
             source = None
 
         destination = agent_dir / filename
+        generated_locally = False
 
         if source is None:
+            generated_locally = True
             if module_name in self_correcting_modules:
                 source = self_correcting_modules[module_name]
             else:
@@ -2020,6 +2156,14 @@ def _write_node_modules(
                 missing_files.append(missing_entry)
 
         destination.write_text(source, encoding="utf-8")
+        _validate_node_module(
+            destination,
+            node_id,
+            module_name,
+            user_goal,
+            errors,
+            allow_regenerate=generated_locally,
+        )
 
 
 def _detect_node_callable(module_path: Path, hints: Iterable[str]) -> str:
@@ -3013,6 +3157,7 @@ where = ["src"]
         "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
     }
     missing_files = []
+    scaffold_errors: List[str] = []
     for src_rel, dest_rel in files.items():
         dst = base / dest_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -3169,8 +3314,20 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         agent_dir = base / "src" / "agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
+        module_lookup = {module_name: node_id for node_id, module_name, _, _ in node_specs}
         for filename, source in generated_architecture_nodes.items():
-            (agent_dir / filename).write_text(source, encoding="utf-8")
+            module_path = agent_dir / filename
+            module_path.write_text(source, encoding="utf-8")
+            module_name = module_path.stem
+            node_id = module_lookup.get(module_name, module_name)
+            _validate_node_module(
+                module_path,
+                node_id,
+                module_name,
+                user_goal,
+                scaffold_errors,
+                allow_regenerate=True,
+            )
     else:
         node_specs = _collect_architecture_nodes(architecture)
 
@@ -3181,6 +3338,7 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 normalized_generated,
                 missing_files,
                 user_goal,
+                scaffold_errors,
             )
 
     node_definitions: List[Dict[str, str]] = []
@@ -3395,7 +3553,11 @@ Run the automated suite before shipping changes.
 
     (base / "README.md").write_text(readme_contents, encoding="utf-8")
 
-    state["scaffold"] = {"path": str(base), "ok": True}
+    scaffold_status: Dict[str, Any] = {"path": str(base), "ok": True}
     if missing_files:
-        state["scaffold"]["missing"] = missing_files
+        scaffold_status["missing"] = missing_files
+    if scaffold_errors:
+        scaffold_status["errors"] = scaffold_errors
+        scaffold_status["ok"] = False
+    state["scaffold"] = scaffold_status
     return state
