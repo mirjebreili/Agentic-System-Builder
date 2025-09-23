@@ -323,7 +323,12 @@ def test_scaffold_project_generates_generic_templates(tmp_path, monkeypatch):
             assert "client.get_chat_model()" in source
             assert "context_data.update" in source
             assert "SystemMessage" in source and "HumanMessage" in source
-            assert "Use the context to fulfill this node's responsibility" in source
+            assert "AIMessage" in source
+            assert "ROLE_SYSTEM_PROMPTS" in source
+            assert "ROLE_RESPONSE_GUIDELINES" in source
+            assert "analyze_task_type" in source
+            assert "messages.append(ai_message)" in source
+            assert "result_payload" in source
         assert "analyze_result" in analyze_source
         assert "implement_result" in implement_source
         assert "Adaptive Agent" in analyze_source
@@ -366,7 +371,9 @@ def test_scaffold_project_uses_structured_node_definitions(tmp_path, monkeypatch
             contents = module_path.read_text(encoding="utf-8")
             assert "Adaptive implementation for the" in contents
             assert node["purpose"] in contents
-            assert "Use the context to fulfill this node's responsibility." in contents
+            assert "ROLE_SYSTEM_PROMPTS" in contents
+            assert "ROLE_RESPONSE_GUIDELINES" in contents
+            assert "messages.append(ai_message)" in contents
             assert node["name"] in contents
     finally:
         if project_dir.exists():
