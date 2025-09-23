@@ -1941,6 +1941,9 @@ def _write_node_modules(
             f"src/agent/{helper_name}",
             f"agent/{helper_name}",
         )
+        if provided_helper is not None and not provided_helper.strip():
+            provided_helper = None
+
         if provided_helper is not None:
             helper_path.write_text(provided_helper, encoding="utf-8")
             continue
@@ -1961,6 +1964,10 @@ def _write_node_modules(
             f"src/agent/{filename}",
             f"agent/{filename}",
         )
+
+        if source is not None and not source.strip():
+            source = None
+
         destination = agent_dir / filename
 
         if source is None:
