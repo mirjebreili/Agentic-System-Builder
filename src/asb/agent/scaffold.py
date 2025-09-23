@@ -606,84 +606,275 @@ def generate_generic_node_template(
     label_literal = json.dumps(node_label)
     result_key_literal = json.dumps(f"{sanitized}_result")
 
-    return f"""from __future__ import annotations
+    role_system_prompts = {
+        "planner": (
+            "You are an expert workflow planner operating as a LangGraph node."
+            " Break complex goals into structured, achievable steps while keeping"
+            " downstream execution in mind."
+        ),
+        "reviewer": (
+            "You are a rigorous reviewer inside a LangGraph workflow."
+            " Inspect prior work for risks, bugs, and gaps before the project"
+            " moves forward."
+        ),
+        "communicator": (
+            "You are a communication specialist summarizing progress for"
+            " stakeholders. Translate outcomes into a clear narrative that"
+            " highlights impact and next steps."
+        ),
+        "analyst": (
+            "You are an investigative analyst responsible for researching,"
+            " interpreting findings, and extracting actionable insights within"
+            " the workflow."
+        ),
+        "executor": (
+            "You are an autonomous LangGraph node focused on advancing the task."
+            " Execute decisively, update artifacts when relevant, and document"
+            " tangible outcomes."
+        ),
+        "default": (
+            "You are a LangGraph node collaborating within a larger agent"
+            " workflow. Reason carefully about the context and deliver the"
+            " strongest next contribution."
+        ),
+    }
 
-from typing import Any, Dict
+    role_response_guidelines = {
+        "planner": (
+            "Return an ordered plan that shows how the broader goal will be"
+            " achieved. Call out dependencies or open questions explicitly."
+        ),
+        "reviewer": (
+            "State whether the inspected work passes your checks. Provide a"
+            " concise rationale, highlight any issues, and suggest corrective"
+            " actions."
+        ),
+        "communicator": (
+            "Summarize the progress so far with emphasis on outcomes, impact,"
+            " and recommended next steps for stakeholders."
+        ),
+        "analyst": (
+            "Document the insights you uncovered, the evidence supporting them,"
+            " and how they inform future decisions."
+        ),
+        "executor": (
+            "Describe the concrete work you performed, mention any artifacts"
+            " touched, and outline immediate follow-up actions if needed."
+        ),
+        "default": (
+            "Report on the progress you achieved and clarify what the team"
+            " should do next."
+        ),
+    }
 
-from langchain_core.messages import HumanMessage, SystemMessage
+    def _dict_literal(name: str, mapping: Dict[str, str]) -> str:
+        lines = [f"{name} = {{"]
+        for key, value in mapping.items():
+            lines.append(f"    {json.dumps(key)}: {json.dumps(value)},")
+        lines.append("}")
+        return "\n".join(lines)
 
-from ..llm import client
+    analyze_lines = [
+        "def analyze_task_type(node_name: str, node_purpose: str, state: Dict[str, Any]) -> Dict[str, str]:",
+        '    """Infer the node role and communication style from metadata and context."""',
+        "    description_parts: List[str] = []",
+        "    for candidate in (node_name, node_purpose):",
+        "        if candidate:",
+        "            description_parts.append(str(candidate))",
+        "    plan_goal = None",
+        "    plan = state.get(\"plan\") or {}",
+        "    if isinstance(plan, dict):",
+        "        plan_goal = plan.get(\"goal\")",
+        "        if plan_goal:",
+        "            description_parts.append(str(plan_goal))",
+        "    latest_user = \"\"",
+        "    for message in reversed(list(state.get(\"messages\") or [])):",
+        "        role = getattr(message, \"type\", None) or getattr(message, \"role\", None)",
+        "        content = getattr(message, \"content\", None)",
+        "        if isinstance(message, dict):",
+        "            role = message.get(\"role\") or role",
+        "            if message.get(\"content\") is not None:",
+        "                content = message.get(\"content\")",
+        "        if not content:",
+        "            continue",
+        "        text = str(content).strip()",
+        "        if not text:",
+        "            continue",
+        "        normalized_role = str(role or \"\").lower()",
+        "        if normalized_role in {\"user\", \"human\"}:",
+        "            latest_user = text",
+        "            break",
+        "        if not latest_user:",
+        "            latest_user = text",
+        "    if latest_user:",
+        "        description_parts.append(latest_user)",
+        "    combined = \" \".join(part.lower() for part in description_parts if part).strip()",
+        "    role = \"executor\"",
+        "    task_type = \"action\"",
+        "    tone = \"Drive the task forward and produce tangible progress.\"",
+        "    format_hint = \"\"",
+        "    response_focus = \"Explain what you accomplished and surface any key artifacts or follow-up actions.\"",
+        "    if any(keyword in combined for keyword in (\"plan\", \"outline\", \"strategy\", \"roadmap\", \"design\")):",
+        "        role = \"planner\"",
+        "        task_type = \"planning\"",
+        "        tone = \"Synthesize context into a concrete plan with structured reasoning.\"",
+        "        format_hint = \"Return numbered steps that chart the path forward.\"",
+        "        response_focus = \"Summarize the plan and highlight dependencies or open questions.\"",
+        "    elif any(keyword in combined for keyword in (\"review\", \"evaluate\", \"critique\", \"check\", \"verify\", \"validate\", \"analysis\", \"assess\")):",
+        "        role = \"reviewer\"",
+        "        task_type = \"evaluation\"",
+        "        tone = \"Apply critical thinking to assess quality, risks, and completeness.\"",
+        "        format_hint = \"Provide pass/fail judgement with supporting rationale.\"",
+        "        response_focus = \"Call out issues discovered and recommended next steps.\"",
+        "    elif any(keyword in combined for keyword in (\"summarize\", \"summary\", \"report\", \"communicate\", \"brief\", \"final\", \"update\", \"status\")):",
+        "        role = \"communicator\"",
+        "        task_type = \"synthesis\"",
+        "        tone = \"Condense the progress into a clear summary for stakeholders.\"",
+        "        format_hint = \"Use short paragraphs or bullet points focused on outcomes.\"",
+        "        response_focus = \"Deliver a polished summary emphasizing results and implications.\"",
+        "    elif any(keyword in combined for keyword in (\"research\", \"investigate\", \"analyze\", \"learn\", \"understand\")):",
+        "        role = \"analyst\"",
+        "        task_type = \"research\"",
+        "        tone = \"Reason through the problem and document insights methodically.\"",
+        "        format_hint = \"Capture findings and any outstanding unknowns.\"",
+        "        response_focus = \"Detail insights gathered and how they inform next actions.\"",
+        "    return {",
+        "        \"role\": role,",
+        "        \"task_type\": task_type,",
+        "        \"tone\": tone,",
+        "        \"format_hint\": format_hint,",
+        "        \"response_focus\": response_focus,",
+        "    }",
+    ]
 
+    node_lines = [
+        f"def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:",
+        f"    \"\"\"Adaptive implementation for the '{node_label}' node.\"\"\"",
+        "",
+        "    llm = client.get_chat_model()",
+        f"    analysis = analyze_task_type({label_literal}, {purpose_literal}, state)",
+        "    role = analysis.get(\"role\", \"executor\")",
+        "    task_type = analysis.get(\"task_type\", \"action\")",
+        "    tone = analysis.get(\"tone\") or \"\"",
+        "    format_hint = analysis.get(\"format_hint\") or \"\"",
+        "    response_focus = analysis.get(\"response_focus\") or \"\"",
+        "    system_prompt = ROLE_SYSTEM_PROMPTS.get(role) or ROLE_SYSTEM_PROMPTS[\"default\"]",
+        "    if tone:",
+        "        system_prompt = f\"{system_prompt}\\n\\n{tone}\"",
+        f"    raw_goal = state.get(\"goal\") or (state.get(\"plan\") or {{}}).get(\"goal\") or {goal_literal}",
+        "    goal = str(raw_goal).strip() or {goal_literal}",
+        "    context_data: Dict[str, Any] = {}",
+        "    for candidate in (",
+        "        state.get(\"context\"),",
+        "        (state.get(\"scaffold\") or {}).get(\"context\"),",
+        "    ):",
+        "        if isinstance(candidate, dict):",
+        "            context_data.update(candidate)",
+        "",
+        "    context_lines: List[str] = []",
+        "    if goal:",
+        "        context_lines.append(f\"Overall goal: {goal}\")",
+        f"    node_purpose = {purpose_literal}",
+        "    if node_purpose:",
+        "        context_lines.append(f\"Node purpose: {node_purpose}\")",
+        "    if context_data:",
+        "        context_lines.append(\"Shared context:\")",
+        "        for key, value in context_data.items():",
+        "            context_lines.append(f\"- {key}: {value}\")",
+        "",
+        "    messages = list(state.get(\"messages\") or [])",
+        "    latest_user = \"\"",
+        "    for message in reversed(messages):",
+        "        role_name = getattr(message, \"type\", None) or getattr(message, \"role\", None)",
+        "        content = getattr(message, \"content\", None)",
+        "        if isinstance(message, dict):",
+        "            role_name = message.get(\"role\") or role_name",
+        "            if message.get(\"content\") is not None:",
+        "                content = message.get(\"content\")",
+        "        if not content:",
+        "            continue",
+        "        text = str(content).strip()",
+        "        if not text:",
+        "            continue",
+        "        normalized = str(role_name or \"\").lower()",
+        "        if normalized in {\"user\", \"human\"}:",
+        "            latest_user = text",
+        "            break",
+        "        if not latest_user:",
+        "            latest_user = text",
+        "    if latest_user:",
+        "        context_lines.append(f\"Latest user input: {latest_user}\")",
+        "",
+        "    context_snapshot = list(context_lines)",
+        "    context_block = \"\\n\".join(context_lines) or \"No additional context available.\"",
+        "    response_guidance = ROLE_RESPONSE_GUIDELINES.get(role) or ROLE_RESPONSE_GUIDELINES[\"default\"]",
+        "    user_sections: List[str] = [",
+        "        \"Context:\",",
+        "        context_block,",
+        "        \"\",",
+        "        response_guidance,",
+        "    ]",
+        "    if response_focus:",
+        "        user_sections.append(response_focus)",
+        "    if format_hint:",
+        "        user_sections.append(format_hint)",
+        "    user_sections.append(\"Be specific about progress made and reference any artifacts updated.\")",
+        "    user_prompt = \"\\n\".join(section for section in user_sections if section)",
+        "",
+        "    try:",
+        "        response = llm.invoke(",
+        "            [",
+        "                SystemMessage(content=system_prompt),",
+        "                HumanMessage(content=user_prompt),",
+        "            ]",
+        "        )",
+        "        content = getattr(response, \"content\", response)",
+        "        result_text = content if isinstance(content, str) else str(content)",
+        "",
+        "        updated_state = dict(state)",
+        "        updated_state.pop(\"error\", None)",
+        "        result_payload: Dict[str, Any] = {",
+        f"            \"node\": {label_literal},",
+        "            \"role\": role,",
+        "            \"task_type\": task_type,",
+        "            \"content\": result_text,",
+        "        }",
+        "        if context_snapshot:",
+        "            result_payload[\"context\"] = context_snapshot",
+        f"        updated_state[{result_key_literal}] = result_payload",
+        "        ai_message = AIMessage(",
+        "            content=result_text,",
+        "            additional_kwargs={\"node\": {label_literal}, \"node_role\": role},",
+        "            response_metadata={\"task_type\": task_type},",
+        "        )",
+        "        messages.append(ai_message)",
+        "        updated_state[\"messages\"] = messages",
+        "        return updated_state",
+        "    except Exception as exc:",
+        "        failed_state = dict(state)",
+        "        failed_state[\"error\"] = str(exc)",
+        "        return failed_state",
+    ]
 
-def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:
-    \"\"\"Adaptive implementation for the '{node_label}' node.\"\"\"
+    template_lines = [
+        "from __future__ import annotations",
+        "",
+        "from typing import Any, Dict, List",
+        "",
+        "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
+        "",
+        "from ..llm import client",
+        "",
+        _dict_literal("ROLE_SYSTEM_PROMPTS", role_system_prompts),
+        "",
+        _dict_literal("ROLE_RESPONSE_GUIDELINES", role_response_guidelines),
+        "",
+        *analyze_lines,
+        "",
+        *node_lines,
+    ]
 
-    llm = client.get_chat_model()
-    raw_goal = state.get(\"goal\") or (state.get(\"plan\") or {{}}).get(\"goal\") or {goal_literal}
-    goal = str(raw_goal).strip() or {goal_literal}
-    context_data: Dict[str, Any] = {{}}
-    for candidate in (
-        state.get(\"context\"),
-        (state.get(\"scaffold\") or {{}}).get(\"context\"),
-    ):
-        if isinstance(candidate, dict):
-            context_data.update(candidate)
-
-    context_lines = []
-    if goal:
-        context_lines.append(f\"Overall goal: {{goal}}\")
-    node_purpose = {purpose_literal}
-    if node_purpose:
-        context_lines.append(f\"Node purpose: {{node_purpose}}\")
-    if context_data:
-        context_lines.append(\"Shared context:\")
-        for key, value in context_data.items():
-            context_lines.append(f\"- {{key}}: {{value}}\")
-
-    messages = list(state.get(\"messages\") or [])
-    latest_input = ""
-    if messages:
-        last_message = messages[-1]
-        if isinstance(last_message, dict):
-            latest_input = str(last_message.get(\"content\") or "").strip()
-        else:
-            latest_input = str(getattr(last_message, \"content\", "") or "").strip()
-    if latest_input:
-        context_lines.append(f\"Latest user input: {{latest_input}}\")
-
-    context = "\\n".join(context_lines) or "No additional context available."
-
-    system_prompt = (
-        "You are a LangGraph node executing a focused step in a larger workflow. "
-        "Reason carefully about the provided context and respond with the best next action."
-    )
-    user_prompt = (
-        "Use the context to fulfill this node's responsibility.\\n"
-        f"{{context}}\\n"
-        "Return a concise update describing what you accomplished and any outputs users should see."
-    )
-
-    try:
-        response = llm.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
-        )
-        content = getattr(response, \"content\", response)
-        result_text = content if isinstance(content, str) else str(content)
-
-        updated_state = dict(state)
-        updated_state.pop(\"error\", None)
-        messages.append({{"role": "assistant", "content": result_text, "node": {label_literal}}})
-        updated_state["messages"] = messages
-        updated_state[{result_key_literal}] = result_text
-        return updated_state
-    except Exception as exc:
-        failed_state = dict(state)
-        failed_state[\"error\"] = str(exc)
-        return failed_state
-"""
+    return "\n".join(template_lines) + "\n"
 
 
 def _normalize_tot_node_id(node_id: str) -> str:
