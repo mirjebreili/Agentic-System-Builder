@@ -591,6 +591,59 @@ def capture_tot_error(state: Dict[str, Any], node_id: str, error: Exception) -> 
     new_state["tot"] = container
     new_state["error"] = str(error)
     return new_state
+
+
+def analyze_task_type(goal: str) -> str:
+    normalized = (goal or "").strip().lower()
+    if not normalized:
+        return "action"
+
+    if any(
+        keyword in normalized
+        for keyword in ("plan", "outline", "strategy", "roadmap", "design")
+    ):
+        return "planning"
+    if any(
+        keyword in normalized
+        for keyword in (
+            "review",
+            "evaluate",
+            "critique",
+            "check",
+            "verify",
+            "validate",
+            "analysis",
+            "assess",
+        )
+    ):
+        return "evaluation"
+    if any(
+        keyword in normalized
+        for keyword in (
+            "summarize",
+            "summary",
+            "report",
+            "communicate",
+            "brief",
+            "final",
+            "update",
+            "status",
+        )
+    ):
+        return "synthesis"
+    if any(
+        keyword in normalized
+        for keyword in (
+            "research",
+            "investigate",
+            "analyze",
+            "learn",
+            "understand",
+        )
+    ):
+        return "research"
+
+    return "action"
 """
 
 
