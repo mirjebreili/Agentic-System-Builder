@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
-_ADAPTIVE_STATE_FIELDS: List[tuple[str, str]] = [
+_BASE_STATE_FIELDS: List[tuple[str, str]] = [
     ("architecture", "Dict[str, Any]"),
     ("artifacts", "Dict[str, Any]"),
     ("build_attempts", "int"),
@@ -46,7 +46,62 @@ _ADAPTIVE_STATE_FIELDS: List[tuple[str, str]] = [
 ]
 
 
-def generate_adaptive_state_schema(architecture_plan: Dict[str, Any] | None) -> str:
+_SELF_CORRECTION_STATE_FIELDS: List[tuple[str, str]] = [
+    ("attempt", "int"),
+    ("awaiting_validation", "bool"),
+    ("history", "List[Dict[str, Any]]"),
+    ("latest_candidate", "str | None"),
+    ("max_attempts", "int"),
+    ("needs_revision", "bool"),
+    ("validation", "Dict[str, Any]"),
+]
+
+
+def _architecture_requires_self_correction(architecture_plan: Dict[str, Any] | None) -> bool:
+    if not isinstance(architecture_plan, dict):
+        return False
+
+    def _matches(value: Any) -> bool:
+        if isinstance(value, str):
+            return "self_correcting_generation" in value.strip().lower()
+        return False
+
+    for key in ("workflow_pattern", "pattern", "default_pattern"):
+        value = architecture_plan.get(key)
+        if _matches(value):
+            return True
+
+    workflow = architecture_plan.get("workflow")
+    if isinstance(workflow, dict):
+        for key in ("pattern", "name", "type"):
+            if _matches(workflow.get(key)):
+                return True
+
+    patterns = architecture_plan.get("patterns")
+    if isinstance(patterns, list):
+        for entry in patterns:
+            if isinstance(entry, dict):
+                for key in ("name", "pattern", "type"):
+                    if _matches(entry.get(key)):
+                        return True
+            elif _matches(entry):
+                return True
+
+    for value in architecture_plan.values():
+        if isinstance(value, dict):
+            if _architecture_requires_self_correction(value):
+                return True
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and _architecture_requires_self_correction(item):
+                    return True
+                if _matches(item):
+                    return True
+
+    return False
+
+
+def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> str:
     """Render the default state.py template with plan-aware result fields."""
 
     nodes: List[str] = []
@@ -85,13 +140,26 @@ def generate_adaptive_state_schema(architecture_plan: Dict[str, Any] | None) -> 
         "class ChatMessage(TypedDict, total=False):",
         '    role: Literal["human", "user", "assistant", "system", "tool"]',
         "    content: str",
-        "",
-        "",
-        "class AppState(TypedDict, total=False):",
     ]
 
-    for field_name, annotation in _ADAPTIVE_STATE_FIELDS:
+    include_self_correction = _architecture_requires_self_correction(architecture_plan)
+
+    lines.extend(["", ""])
+
+    if include_self_correction:
+        lines.append("class SelfCorrectionState(TypedDict, total=False):")
+        for field_name, annotation in _SELF_CORRECTION_STATE_FIELDS:
+            lines.append(f"    {field_name}: {annotation}")
+
+        lines.extend(["", ""])
+
+    lines.append("class AppState(TypedDict, total=False):")
+
+    for field_name, annotation in _BASE_STATE_FIELDS:
         lines.append(f"    {field_name}: {annotation}")
+
+    if include_self_correction:
+        lines.append("    self_correction: SelfCorrectionState")
 
     for node_field in nodes:
         lines.append(f"    {node_field}: Dict[str, Any]")
@@ -121,7 +189,7 @@ def generate_adaptive_state_schema(architecture_plan: Dict[str, Any] | None) -> 
     return "\n".join(lines) + "\n"
 
 
-STATE_TEMPLATE = generate_adaptive_state_schema({})
+STATE_TEMPLATE = generate_enhanced_state_schema({})
 
 # repository root
 ROOT = Path(__file__).resolve().parents[3]
@@ -1048,18 +1116,25 @@ def extract_requirements(state: Dict[str, Any]) -> str:
 
 
 def get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
-    scaffold = state.get("scaffold")
-    if isinstance(scaffold, dict):
-        payload = scaffold.get("self_correction")
-        if isinstance(payload, dict):
-            return dict(payload)
+    if isinstance(state, dict):
+        direct = state.get("self_correction")
+        if isinstance(direct, dict):
+            return dict(direct)
+
+        scaffold = state.get("scaffold")
+        if isinstance(scaffold, dict):
+            payload = scaffold.get("self_correction")
+            if isinstance(payload, dict):
+                return dict(payload)
     return {}
 
 
 def apply_self_correction_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_payload = dict(payload)
     new_state = dict(state)
+    new_state["self_correction"] = normalized_payload
     scaffold = dict(new_state.get("scaffold") or {})
-    scaffold["self_correction"] = payload
+    scaffold["self_correction"] = normalized_payload
     new_state["scaffold"] = scaffold
     new_state.pop("error", None)
     return new_state
@@ -1923,11 +1998,14 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "def _get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:",
             "    if not isinstance(state, dict):",
             "        return {}",
+            "    payload = state.get('self_correction')",
+            "    if isinstance(payload, dict):",
+            "        return payload",
             "    scaffold = state.get('scaffold')",
             "    if isinstance(scaffold, dict):",
-            "        payload = scaffold.get('self_correction')",
-            "        if isinstance(payload, dict):",
-            "            return payload",
+            "        nested = scaffold.get('self_correction')",
+            "        if isinstance(nested, dict):",
+            "            return nested",
             "    return {}",
             "",
             "",
@@ -2137,6 +2215,17 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    return available",
             "",
             "",
+            "def _fallback_node(state: Dict[str, Any]) -> Dict[str, Any]:",
+            "    updated = dict(state)",
+            "    scaffold = dict(updated.get('scaffold') or {})",
+            "    scaffold.setdefault('ok', True)",
+            "    updated['scaffold'] = scaffold",
+            "    report = dict(updated.get('report') or {})",
+            "    report.setdefault('status', 'skipped')",
+            "    updated['report'] = report",
+            "    return updated",
+            "",
+            "",
             "def create_dynamic_graph(",
             "    pattern: Dict[str, Any],",
             "    node_sequence: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]],",
@@ -2165,17 +2254,22 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "            if source_name and target_name:",
             "                edges.append((source_name, target_name))",
             "    if not edges:",
-            "        previous: str | None = None",
-            "        for node_id in ordered_ids:",
-            "            if previous is None:",
-            "                graph.add_edge(START, node_id)",
-            "            else:",
-            "                graph.add_edge(previous, node_id)",
-            "            previous = node_id",
-            "        if previous is None:",
-            "            graph.add_edge(START, END)",
+            "        if not ordered_ids:",
+            "            graph.add_node('fallback', _fallback_node)",
+            "            graph.add_edge(START, 'fallback')",
+            "            graph.add_edge('fallback', END)",
             "        else:",
-            "            graph.add_edge(previous, END)",
+            "            previous: str | None = None",
+            "            for node_id in ordered_ids:",
+            "                if previous is None:",
+            "                    graph.add_edge(START, node_id)",
+            "                else:",
+            "                    graph.add_edge(previous, node_id)",
+            "                previous = node_id",
+            "            if previous is None:",
+            "                graph.add_edge(START, END)",
+            "            else:",
+            "                graph.add_edge(previous, END)",
             "    else:",
             "        start_connected = False",
             "        outgoing: set[str] = set()",
@@ -2227,7 +2321,11 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    return create_dynamic_graph(pattern, node_sequence, path=path)",
             "",
             "",
-            "graph = generate_dynamic_workflow()",
+            "def _make_graph(path: str | None = None):",
+            "    return generate_dynamic_workflow(path=path)",
+            "",
+            "",
+            "graph = _make_graph()",
         ]
     )
 
@@ -2409,10 +2507,11 @@ where = ["src"]
     state_path = base / "src" / "agent" / "state.py"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     if generated_state:
-        state_path.write_text(generated_state, encoding="utf-8")
+        state_contents = generated_state
     else:
-        fallback_state = generate_adaptive_state_schema(architecture_plan)
-        state_path.write_text(fallback_state, encoding="utf-8")
+        state_contents = generate_enhanced_state_schema(architecture_plan)
+
+    state_path.write_text(state_contents, encoding="utf-8")
 
     # imports are already correct in copied files
 

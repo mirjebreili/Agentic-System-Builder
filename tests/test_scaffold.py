@@ -76,7 +76,7 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert "ARCHITECTURE_STATE = json.loads" in graph_contents
         assert "def analyze_workflow_pattern" in graph_contents
         assert "def generate_dynamic_workflow" in graph_contents
-        assert "graph = generate_dynamic_workflow()" in graph_contents
+        assert "graph = _make_graph()" in graph_contents
 
         langgraph_config = json.loads((project_dir / "langgraph.json").read_text(encoding="utf-8"))
         assert langgraph_config["graphs"]["agent"] == "src.agent.graph:graph"
@@ -206,7 +206,7 @@ def test_scaffold_project_builds_architecture_modules(tmp_path, monkeypatch):
         assert "from .design import run_design as design" in graph_text
         assert "ARCHITECTURE_STATE = json.loads" in graph_text
         assert "def create_dynamic_graph" in graph_text
-        assert "graph = generate_dynamic_workflow()" in graph_text
+        assert "graph = _make_graph()" in graph_text
 
         monkeypatch.syspath_prepend(str(project_dir))
         monkeypatch.setenv("LANGGRAPH_ENV", "cloud")
@@ -455,6 +455,8 @@ def test_scaffold_project_generates_self_correcting_nodes(tmp_path, monkeypatch)
         assert "def register_candidate" in utils_text
         assert "def record_validation_result" in utils_text
         assert "def parse_validation_response" in utils_text
+        assert 'state.get("self_correction")' in utils_text
+        assert 'new_state["self_correction"]' in utils_text
 
         generate_text = (agent_dir / "generate_solution.py").read_text(encoding="utf-8")
         assert "from .self_correction import" in generate_text
@@ -472,6 +474,7 @@ def test_scaffold_project_generates_self_correcting_nodes(tmp_path, monkeypatch)
         graph_text = (agent_dir / "graph.py").read_text(encoding="utf-8")
         assert "def generate_self_correcting_nodes" in graph_text
         assert "pattern_name == 'self_correcting_generation'" in graph_text
+        assert "payload = state.get('self_correction')" in graph_text
     finally:
         if project_dir.exists():
             shutil.rmtree(project_dir)

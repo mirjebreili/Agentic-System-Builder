@@ -5,6 +5,15 @@ class ChatMessage(TypedDict, total=False):
     role: Literal["human","user","assistant","system","tool"]
     content: str
 
+class SelfCorrectionState(TypedDict, total=False):
+    attempt: int
+    awaiting_validation: bool
+    history: List[Dict[str, Any]]
+    latest_candidate: str | None
+    max_attempts: int
+    needs_revision: bool
+    validation: Dict[str, Any]
+
 class AppState(TypedDict, total=False):
     architecture: Dict[str, Any]
     artifacts: Dict[str, Any]
@@ -38,6 +47,7 @@ class AppState(TypedDict, total=False):
     review: Dict[str, Any]
     sandbox: Dict[str, Any]
     scaffold: Dict[str, Any]
+    self_correction: SelfCorrectionState
     selected_thought: Dict[str, Any]
     syntax_validation: Dict[str, Any]
     tests: Dict[str, Any]
