@@ -89,17 +89,20 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         ):
             assert (project_dir / package_file).exists()
 
-        smoke_contents = (project_dir / "tests" / "test_smoke.py").read_text(encoding="utf-8")
-        assert '"""Smoke tests for the generated agent project."""' in smoke_contents
-        assert "import importlib" in smoke_contents
-        assert "from pathlib import Path" in smoke_contents
-        assert "def test_import_graph():" in smoke_contents
-        assert "def test_state_structure():" in smoke_contents
-        assert "def test_graph_execution(tmp_path: Path):" in smoke_contents
-        assert 'assert isinstance(result["messages"], list)' in smoke_contents
-        assert 'assert any(' in smoke_contents
-        assert 'if __name__ == "__main__":' in smoke_contents
-        assert "pytest.main([__file__])" in smoke_contents
+        workflow_test_path = project_dir / "tests" / "test_workflow.py"
+        assert workflow_test_path.exists()
+        suite_contents = workflow_test_path.read_text(encoding="utf-8")
+        assert '"""Comprehensive tests for the generated agent workflow."""' in suite_contents
+        assert "import src.agent.graph as graph_module" in suite_contents
+        assert "import src.agent.executor as executor_module" in suite_contents
+        assert "EXPECTED_PATTERN_NAME" in suite_contents
+        assert "@pytest.fixture(autouse=True)" in suite_contents
+        assert "def test_end_to_end_execution(tmp_path: Path, stub_node_implementations):" in suite_contents
+        assert "def test_generate_dynamic_workflow_handles_missing_state" in suite_contents
+        assert "def test_state_schema_self_correction_contract():" in suite_contents
+        assert 'if __name__ == "__main__":' in suite_contents
+        assert "pytest.main([__file__])" in suite_contents
+        assert not (project_dir / "tests" / "test_smoke.py").exists()
 
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         for dependency in UPDATED_DEPENDENCIES:
