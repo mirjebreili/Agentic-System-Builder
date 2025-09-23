@@ -6,9 +6,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from asb.scaffold.build_nodes import (
     SCAFFOLD_BASE_PATH_KEY,
     SCAFFOLD_ROOT_KEY,
+    _atomic_write_text,
     copy_base_files,
     init_project_structure,
     write_config_files,
+    write_graph_module,
+    write_node_modules,
+    write_state_schema,
 )
 
 
@@ -1054,11 +1058,11 @@ def _ensure_tot_utils(agent_dir: Path, generated: Dict[str, str]) -> None:
         "agent/utils.py",
     )
     if provided is not None:
-        utils_path.write_text(provided, encoding="utf-8")
+        _atomic_write_text(utils_path, provided)
         return
 
     if not utils_path.exists():
-        utils_path.write_text(TOT_UTILS_TEMPLATE, encoding="utf-8")
+        _atomic_write_text(utils_path, TOT_UTILS_TEMPLATE)
 
 
 def _render_generate_thoughts(node_id: str, sanitized: str) -> str:
@@ -2104,11 +2108,11 @@ def _write_node_modules(
             provided_helper = None
 
         if provided_helper is not None:
-            helper_path.write_text(provided_helper, encoding="utf-8")
+            _atomic_write_text(helper_path, provided_helper)
             continue
 
         if not helper_path.exists():
-            helper_path.write_text(helper_source, encoding="utf-8")
+            _atomic_write_text(helper_path, helper_source)
             helper_entry = str(helper_path)
             if helper_entry not in missing_files:
                 missing_files.append(helper_entry)
@@ -2177,7 +2181,7 @@ def _write_node_modules(
             if missing_entry not in missing_files:
                 missing_files.append(missing_entry)
 
-        destination.write_text(source, encoding="utf-8")
+        _atomic_write_text(destination, source)
         _validate_node_module(
             destination,
             node_id,
@@ -3150,20 +3154,30 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(architecture_plan, dict):
         architecture_plan = architecture if isinstance(architecture, dict) else {}
 
-    generated_state = _get_generated_content(
-        normalized_generated,
-        "state.py",
-        "src/agent/state.py",
-        "agent/state.py",
-    )
-    state_path = base / "src" / "agent" / "state.py"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    if generated_state:
-        state_contents = generated_state
-    else:
-        state_contents = generate_enhanced_state_schema(architecture_plan)
+    node_definitions: List[Dict[str, str]] = []
+    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
 
-    state_path.write_text(state_contents, encoding="utf-8")
+    state["_scaffold_generated"] = normalized_generated
+    state["_scaffold_architecture_plan"] = architecture_plan
+    state["_scaffold_user_goal"] = user_goal
+    state["_scaffold_missing_files"] = missing_files
+    state["_scaffold_errors"] = scaffold_errors
+    state[SCAFFOLD_BASE_PATH_KEY] = base
+
+    try:
+        write_state_schema(state)
+
+        node_definitions, node_specs = write_node_modules(state)
+        state["_scaffold_node_definitions"] = node_definitions
+        write_graph_module(state)
+    finally:
+        state.pop("_scaffold_node_definitions", None)
+        state.pop("_scaffold_architecture_plan", None)
+        state.pop("_scaffold_generated", None)
+        state.pop("_scaffold_user_goal", None)
+        state.pop("_scaffold_missing_files", None)
+        state.pop("_scaffold_errors", None)
+        state.pop(SCAFFOLD_BASE_PATH_KEY, None)
 
     # imports are already correct in copied files
 
@@ -3255,107 +3269,6 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "current_step": {"more_steps": False, "steps_done": False},
         }
 """, encoding="utf-8")
-
-    generated_architecture_nodes = generate_nodes_from_architecture(
-        architecture_plan,
-        user_goal,
-    )
-
-    node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
-    if generated_architecture_nodes:
-        nodes_list = architecture_plan.get("nodes") or []
-        seen_nodes: set[str] = set()
-        for entry in nodes_list:
-            if not isinstance(entry, dict):
-                continue
-
-            raw_name = entry.get("name") or entry.get("id") or entry.get("label")
-            if raw_name is None:
-                continue
-
-            node_id = str(raw_name).strip()
-            if not node_id or node_id in seen_nodes:
-                continue
-
-            module_name = _sanitize_identifier(node_id)
-            hints = _candidate_call_hints(node_id, module_name)
-            metadata = dict(entry)
-            metadata.setdefault("id", node_id)
-            node_specs.append((node_id, module_name, hints, metadata))
-            seen_nodes.add(node_id)
-
-        agent_dir = base / "src" / "agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        module_lookup = {module_name: node_id for node_id, module_name, _, _ in node_specs}
-        for filename, source in generated_architecture_nodes.items():
-            module_path = agent_dir / filename
-            module_path.write_text(source, encoding="utf-8")
-            module_name = module_path.stem
-            node_id = module_lookup.get(module_name, module_name)
-            _validate_node_module(
-                module_path,
-                node_id,
-                module_name,
-                user_goal,
-                scaffold_errors,
-                allow_regenerate=True,
-            )
-    else:
-        node_specs = _collect_architecture_nodes(architecture)
-
-        if node_specs:
-            _write_node_modules(
-                base,
-                node_specs,
-                normalized_generated,
-                missing_files,
-                user_goal,
-                scaffold_errors,
-            )
-
-    node_definitions: List[Dict[str, str]] = []
-    if node_specs:
-        agent_dir = base / "src" / "agent"
-        for node_id, module_name, hints, _ in node_specs:
-            module_path = agent_dir / f"{module_name}.py"
-            callable_name = _detect_node_callable(module_path, hints)
-            alias = module_name
-            node_definitions.append(
-                {
-                    "id": node_id,
-                    "module": module_name,
-                    "callable": callable_name,
-                    "alias": alias,
-                }
-            )
-
-    executor_source = _get_generated_content(
-        normalized_generated,
-        "executor.py",
-        "src/agent/executor.py",
-        "agent/executor.py",
-    )
-    if executor_source is None:
-        executor_source = _render_executor_module(node_definitions)
-
-    (base / "src/agent/executor.py").write_text(executor_source, encoding="utf-8")
-
-    graph_source = _get_generated_content(
-        normalized_generated,
-        "graph.py",
-        "src/agent/graph.py",
-        "agent/graph.py",
-    )
-
-    graph_plan: Dict[str, Any] = {}
-    if isinstance(architecture_plan, dict):
-        graph_plan = dict(architecture_plan)
-    graph_plan["_node_definitions"] = node_definitions
-
-    if graph_source is None:
-        graph_source = generate_dynamic_workflow_module(graph_plan)
-
-    (base / "src/agent/graph.py").write_text(graph_source, encoding="utf-8")
 
     # tests
     tests_dir = base / "tests"
