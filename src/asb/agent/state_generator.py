@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Literal, TypedDict
 
-from asb.agent.scaffold import generate_adaptive_state_schema
+from asb.agent.scaffold import generate_enhanced_state_schema
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ def generate_state_schema(state: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(plan_metadata, dict):
             plan_metadata = {}
 
-    state_module = generate_adaptive_state_schema(plan_metadata)
+    state_module = generate_enhanced_state_schema(plan_metadata)
     existing_fields = _parse_schema_fields(state_module)
     existing_field_names = set(existing_fields)
 

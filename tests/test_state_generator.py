@@ -43,6 +43,7 @@ EXPECTED_APP_STATE_FIELDS = {
     "review": "Dict[str, Any]",
     "sandbox": "Dict[str, Any]",
     "scaffold": "Dict[str, Any]",
+    "self_correction": "SelfCorrectionState",
     "selected_thought": "Dict[str, Any]",
     "syntax_validation": "Dict[str, Any]",
     "tests": "Dict[str, Any]",
@@ -51,10 +52,9 @@ EXPECTED_APP_STATE_FIELDS = {
     "validation_errors": "List[str]",
 }
 
-EXPECTED_TEMPLATE_FIELDS = {
-    **EXPECTED_APP_STATE_FIELDS,
-    "messages": "Annotated[List[AnyMessage], add_messages]",
-}
+EXPECTED_TEMPLATE_FIELDS = dict(EXPECTED_APP_STATE_FIELDS)
+EXPECTED_TEMPLATE_FIELDS["messages"] = "Annotated[List[AnyMessage], add_messages]"
+EXPECTED_TEMPLATE_FIELDS.pop("self_correction", None)
 
 
 def _parse_app_state_fields(source: str) -> dict[str, str]:
@@ -131,6 +131,28 @@ def test_generate_state_schema_defaults_to_expected_fields_when_sparse():
     generated = generate_state_schema({}).get("generated_files", {}).get("state.py", "")
     fields = _parse_app_state_fields(generated)
     assert fields == EXPECTED_TEMPLATE_FIELDS
+
+
+def test_generate_state_schema_adds_self_correction_fields_for_pattern():
+    state = {
+        "architecture": {
+            "plan": {
+                "workflow_pattern": "self_correcting_generation",
+                "nodes": [
+                    {"name": "Generate"},
+                    {"name": "Validate"},
+                    {"name": "Correct"},
+                ],
+            }
+        }
+    }
+
+    generated = generate_state_schema(state).get("generated_files", {}).get("state.py", "")
+
+    assert "class SelfCorrectionState" in generated
+
+    fields = _parse_app_state_fields(generated)
+    assert fields["self_correction"] == "SelfCorrectionState"
 
 
 def test_state_generator_node_appends_summary_message():
