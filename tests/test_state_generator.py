@@ -43,6 +43,7 @@ EXPECTED_APP_STATE_FIELDS = {
     "review": "Dict[str, Any]",
     "sandbox": "Dict[str, Any]",
     "scaffold": "Dict[str, Any]",
+    "scaffold_phase": "ScaffoldPhase",
     "self_correction": "SelfCorrectionState",
     "selected_thought": "Dict[str, Any]",
     "syntax_validation": "Dict[str, Any]",

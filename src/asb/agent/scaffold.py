@@ -37,6 +37,7 @@ _BASE_STATE_FIELDS: List[tuple[str, str]] = [
     ("review", "Dict[str, Any]"),
     ("sandbox", "Dict[str, Any]"),
     ("scaffold", "Dict[str, Any]"),
+    ("scaffold_phase", "ScaffoldPhase"),
     ("selected_thought", "Dict[str, Any]"),
     ("syntax_validation", "Dict[str, Any]"),
     ("tests", "Dict[str, Any]"),
@@ -143,6 +144,19 @@ def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> 
     ]
 
     include_self_correction = _architecture_requires_self_correction(architecture_plan)
+
+    lines.extend(["", ""])
+
+    lines.append("class ScaffoldPhase(TypedDict, total=False):")
+    lines.append('    name: str')
+    lines.append('    description: str')
+    lines.append('    status: Literal["pending", "in_progress", "complete", "failed", "skipped"]')
+    lines.append('    started_at: float')
+    lines.append('    completed_at: float')
+    lines.append('    duration: float')
+    lines.append('    summary: str')
+    lines.append('    details: Dict[str, Any]')
+    lines.append('    error: str')
 
     lines.extend(["", ""])
 

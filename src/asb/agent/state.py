@@ -1,6 +1,8 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Literal, TypedDict
 
+from asb.scaffold import ScaffoldPhase
+
 class ChatMessage(TypedDict, total=False):
     role: Literal["human","user","assistant","system","tool"]
     content: str
@@ -47,6 +49,7 @@ class AppState(TypedDict, total=False):
     review: Dict[str, Any]
     sandbox: Dict[str, Any]
     scaffold: Dict[str, Any]
+    scaffold_phase: ScaffoldPhase
     self_correction: SelfCorrectionState
     selected_thought: Dict[str, Any]
     syntax_validation: Dict[str, Any]
