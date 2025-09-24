@@ -355,20 +355,43 @@ def write_node_modules(
         base = _get_base_path(state)
         agent_dir = base / "src" / "agent"
         ensure_dir(agent_dir)
+
         architecture_plan = state.get("_scaffold_architecture_plan") or {}
         user_goal = state.get("_scaffold_user_goal") or ""
-        generated_nodes = scaffold_module.generate_nodes_from_architecture(
-            architecture_plan, user_goal
-        )
-        node_specs = (
-            _build_plan_node_specs(architecture_plan)
-            if generated_nodes
-            else scaffold_module._collect_architecture_nodes(state.get("architecture") or {})
-        )
-        if generated_nodes:
-            _write_generated_nodes(agent_dir, generated_nodes, node_specs, state)
-        elif node_specs:
-            _write_existing_node_modules(base, node_specs, state, user_goal)
+
+        print(f"🔍 BUILD DEBUG - Architecture plan: {architecture_plan}")
+        print(f"🔍 BUILD DEBUG - User goal: {user_goal}")
+
+        node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
+        generated_nodes: Dict[str, str] = {}
+
+        if isinstance(architecture_plan, dict):
+            node_specs = _build_plan_node_specs(architecture_plan)
+            if node_specs:
+                print(
+                    f"🔍 BUILD DEBUG - Found {len(node_specs)} nodes to generate"
+                )
+                goal_lower = user_goal.lower()
+                if "summariz" in goal_lower or "chat" in goal_lower:
+                    for node_id, module_name, _hints, metadata in node_specs:
+                        template = generate_node_template(node_id, module_name, user_goal, metadata)
+                        generated_nodes[f"{module_name}.py"] = template
+                else:
+                    generated_nodes = scaffold_module.generate_nodes_from_architecture(
+                        architecture_plan, user_goal
+                    ) or {}
+                if generated_nodes:
+                    _write_generated_nodes(agent_dir, generated_nodes, node_specs, state)
+
+        if not generated_nodes:
+            print(
+                "⚠️  No architecture plan found - using fallback generation"
+            )
+            architecture_fallback = state.get("architecture") or {}
+            node_specs = scaffold_module._collect_architecture_nodes(architecture_fallback)
+            if node_specs:
+                _write_existing_node_modules(base, node_specs, state, user_goal)
+
         node_definitions = _build_node_definitions(agent_dir, node_specs)
     except Exception as exc:
         _update_build_report(state, node_name, success=False, errors=[str(exc)])
@@ -380,11 +403,234 @@ def write_node_modules(
         success=True,
         details={
             "node_count": len(node_definitions),
-            "generated_count": len(generated_nodes) if generated_nodes else 0,
+            "architecture_found": bool(architecture_plan),
+            "user_goal": user_goal[:100] + "..." if len(user_goal) > 100 else user_goal,
         },
     )
     return node_definitions, node_specs
 
+
+def generate_node_template(
+    node_id: str,
+    module_name: str,
+    user_goal: str,
+    metadata: Dict[str, Any] | None = None,
+) -> str:
+    """Generate a basic node template based on node ID and user goal."""
+
+    func_name = module_name or node_id
+    user_goal_str = str(user_goal or "")
+    goal_lower = user_goal_str.lower()
+    if "summariz" in goal_lower:
+        return generate_summarizer_node_template(node_id, func_name, user_goal_str, metadata)
+    if "chat" in goal_lower:
+        return generate_chat_node_template(node_id, func_name, user_goal_str, metadata)
+    return generate_generic_node_template(node_id, func_name, user_goal_str, metadata)
+
+
+def generate_summarizer_node_template(
+    node_id: str, func_name: str, user_goal: str, metadata: Dict[str, Any] | None
+) -> str:
+    """Generate a summarizer-specific node."""
+
+    title = node_id.replace("_", " ").title()
+    goal_for_doc = user_goal.replace("\"", "\\\"").replace("\n", " ")
+    purpose = ""
+    if metadata:
+        raw_purpose = metadata.get("purpose") or metadata.get("description")
+        if raw_purpose:
+            purpose = str(raw_purpose).replace("\"", "\\\"").replace("\n", " ")
+
+    lines = [
+        f'"""Generated node: {node_id}"""',
+        "",
+        "from typing import Dict, Any",
+        "from langchain_core.messages import HumanMessage, SystemMessage",
+        "from ..llm import client",
+        "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from .state import AppState",
+        "",
+        f"def {func_name}(state: AppState) -> AppState:",
+        '    """',
+        f"    {title} node for summarization workflow.",
+        f"    Goal: {goal_for_doc}",
+    ]
+    if purpose:
+        lines.append(f"    Purpose: {purpose}")
+    lines.extend(
+        [
+            '    """',
+            "",
+            "    llm = client.get_chat_model()",
+            "    base_prompt = ROLE_SYSTEM_PROMPTS.get(\"default\", \"\")",
+            "    if base_prompt:",
+            "        base_prompt = f\"{base_prompt}\\n\\n\"",
+            "    response_guidelines = ROLE_RESPONSE_GUIDELINES.get(\"default\", \"\")",
+            "    prompt_prefix = base_prompt",
+            "    if response_guidelines:",
+            "        prompt_prefix = (prompt_prefix + response_guidelines + \"\\n\\n\") if prompt_prefix else response_guidelines + \"\\n\\n\"",
+            "",
+            "",
+            '    messages = state.get("messages", [])',
+            '    if messages and isinstance(messages[-1], dict):',
+            '        user_input = messages[-1].get("content", "")',
+            '    else:',
+            '        user_input = state.get("input_text", "")',
+            "",
+            f'    if "{func_name}" == "plan":',
+            '        response = llm.invoke([',
+            '            SystemMessage(prompt_prefix + "You are a summarization planner. Create a strategy for summarizing the given text."),',
+            '            HumanMessage(f"Create a summary plan for: {{user_input}}"),',
+            '        ])',
+            '        return {**state, "summary_plan": response.content}',
+            "",
+            f'    if "{func_name}" == "do":',
+            '        summary_plan = state.get("summary_plan", "Create 3-5 bullet points")',
+            '        response = llm.invoke([',
+            '            SystemMessage(prompt_prefix + "You are an expert summarizer. Follow the plan to create a clear, concise summary."),',
+            '            HumanMessage(f"Plan: {{summary_plan}}\\n\\nText to summarize: {{user_input}}"),',
+            '        ])',
+            '        return {**state, "summary_result": response.content}',
+            "",
+            f'    if "{func_name}" == "finish":',
+            '        summary_result = state.get("summary_result", "")',
+            '        formatted_output = f"## Summary\\n\\n{{summary_result}}"',
+            '        return {**state, "final_output": formatted_output, "completed": True}',
+            "",
+            '    response = llm.invoke([',
+            '        SystemMessage(prompt_prefix + "You are a helpful assistant working on a summarization task."),',
+            '        HumanMessage(f"Process this step: {{user_input}}"),',
+            '    ])',
+            f'    return {{**state, "{func_name}_result": response.content}}',
+        ]
+    )
+    return "\n".join(lines)
+
+
+def generate_chat_node_template(
+    node_id: str,
+    func_name: str,
+    user_goal: str,
+    metadata: Dict[str, Any] | None,
+) -> str:
+    """Generate a chat-specific node."""
+
+    title = node_id.replace("_", " ").title()
+    goal_for_doc = user_goal.replace("\"", "\\\"").replace("\n", " ")
+    purpose = ""
+    if metadata:
+        raw_purpose = metadata.get("purpose") or metadata.get("description")
+        if raw_purpose:
+            purpose = str(raw_purpose).replace("\"", "\\\"").replace("\n", " ")
+
+    lines = [
+        f'"""Generated node: {node_id}"""',
+        "",
+        "from typing import Dict, Any",
+        "from langchain_core.messages import HumanMessage, SystemMessage",
+        "from ..llm import client",
+        "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from .state import AppState",
+        "",
+        f"def {func_name}(state: AppState) -> AppState:",
+        '    """',
+        f"    {title} node for chat workflow.",
+        f"    Goal: {goal_for_doc}",
+    ]
+    if purpose:
+        lines.append(f"    Purpose: {purpose}")
+    lines.extend(
+        [
+            '    """',
+            "",
+            "    llm = client.get_chat_model()",
+            "    base_prompt = ROLE_SYSTEM_PROMPTS.get(\"default\", \"\")",
+            "    if base_prompt:",
+            "        base_prompt = f\"{base_prompt}\\n\\n\"",
+            "    response_guidelines = ROLE_RESPONSE_GUIDELINES.get(\"default\", \"\")",
+            "    prompt_prefix = base_prompt",
+            "    if response_guidelines:",
+            "        prompt_prefix = (prompt_prefix + response_guidelines + \"\\n\\n\") if prompt_prefix else response_guidelines + \"\\n\\n\"",
+            "",
+            '    messages = state.get("messages", [])',
+            '    if messages and isinstance(messages[-1], dict):',
+            '        user_input = messages[-1].get("content", "")',
+            '    else:',
+            '        user_input = state.get("input_text", "")',
+            "",
+            '    response = llm.invoke([',
+            '        SystemMessage(prompt_prefix + "You are a collaborative AI assistant in a chat application."),',
+            f'        HumanMessage(f"Handle the \'{node_id}\' step with input: {{user_input}}"),',
+            '    ])',
+            "",
+            f'    return {{**state, "{func_name}_result": response.content}}',
+        ]
+    )
+    return "\n".join(lines)
+
+
+def generate_generic_node_template(
+    node_id: str,
+    func_name: str,
+    user_goal: str,
+    metadata: Dict[str, Any] | None,
+) -> str:
+    """Generate a generic node template."""
+
+    title = node_id.replace("_", " ").title()
+    goal_for_doc = user_goal.replace("\"", "\\\"").replace("\n", " ")
+    purpose = ""
+    if metadata:
+        raw_purpose = metadata.get("purpose") or metadata.get("description")
+        if raw_purpose:
+            purpose = str(raw_purpose).replace("\"", "\\\"").replace("\n", " ")
+    purpose_for_prompt = purpose or title.lower()
+
+    lines = [
+        f'"""Generated node: {node_id}"""',
+        "",
+        "from typing import Dict, Any",
+        "from langchain_core.messages import HumanMessage, SystemMessage",
+        "from ..llm import client",
+        "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from .state import AppState",
+        "",
+        f"def {func_name}(state: AppState) -> AppState:",
+        '    """',
+        f"    {title} node for workflow.",
+        f"    Goal: {goal_for_doc}",
+    ]
+    if purpose:
+        lines.append(f"    Purpose: {purpose}")
+    lines.extend(
+        [
+            '    """',
+            "",
+            "    llm = client.get_chat_model()",
+            "    base_prompt = ROLE_SYSTEM_PROMPTS.get(\"default\", \"\")",
+            "    if base_prompt:",
+            "        base_prompt = f\"{base_prompt}\\n\\n\"",
+            "    response_guidelines = ROLE_RESPONSE_GUIDELINES.get(\"default\", \"\")",
+            "    prompt_prefix = base_prompt",
+            "    if response_guidelines:",
+            "        prompt_prefix = (prompt_prefix + response_guidelines + \"\\n\\n\") if prompt_prefix else response_guidelines + \"\\n\\n\"",
+            f"    adaptive_prompt = \"Adaptive implementation for the {purpose_for_prompt} step.\"",
+            "",
+            '    messages = state.get("messages", [])',
+            '    if messages and isinstance(messages[-1], dict):',
+            '        user_input = messages[-1].get("content", "")',
+            '    else:',
+            '        user_input = state.get("input_text", "")',
+            "",
+            '    response = llm.invoke([',
+            f'        SystemMessage(prompt_prefix + adaptive_prompt),',
+            '        HumanMessage(f"Input: {{user_input}}"),',
+            '    ])',
+            "",
+            f'    return {{**state, "{func_name}_result": response.content}}',
+        ]
+    )
+    return "\n".join(lines)
 
 def write_graph_module(state: Dict[str, Any]) -> None:
     from asb.agent import scaffold as scaffold_module

@@ -101,6 +101,40 @@ def scaffold_coordinator(state: Mapping[str, Any] | None) -> dict[str, Any]:
     working_state: ScaffoldState = dict(state or {})
     _ensure_scaffold_container(working_state)
 
+    architecture_plan: dict[str, Any] = {}
+    if isinstance(state, Mapping):
+        arch_candidate = state.get("architecture")
+        if isinstance(arch_candidate, dict):
+            architecture_plan = arch_candidate
+        else:
+            plan_candidate = state.get("plan")
+            if isinstance(plan_candidate, dict):
+                architecture_plan = plan_candidate
+
+    user_goal = ""
+    if isinstance(state, Mapping):
+        user_goal = (
+            state.get("goal")
+            or state.get("input_text")
+            or state.get("last_user_input")
+            or ""
+        )
+
+    working_state["_scaffold_architecture_plan"] = architecture_plan
+    working_state["_scaffold_user_goal"] = str(user_goal)
+
+    scaffold_container = working_state.get("scaffold")
+    if isinstance(scaffold_container, Mapping):
+        base_path = scaffold_container.get("path")
+        if base_path:
+            working_state["_scaffold_base_path"] = base_path
+
+    print(f"\ud83d\udd0d SCAFFOLD DEBUG - Architecture plan: {bool(architecture_plan)}")
+    print(f"\ud83d\udd0d SCAFFOLD DEBUG - User goal: {user_goal}")
+    print(
+        f"\ud83d\udd0d SCAFFOLD DEBUG - Plan nodes: {architecture_plan.get('nodes', []) if isinstance(architecture_plan, dict) else []}"
+    )
+
     build_phase, started = _start_phase(
         working_state,
         "build",
