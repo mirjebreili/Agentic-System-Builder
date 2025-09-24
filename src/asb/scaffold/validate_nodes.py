@@ -158,6 +158,70 @@ def _record_validation_result(
         scaffold["ok"] = False
 
 
+def validate_non_empty_generation(state: ScaffoldState) -> ScaffoldState:
+    """Ensure the scaffold produced non-empty executor and graph modules."""
+
+    errors: List[str] = []
+    details: Dict[str, Any] = {}
+
+    try:
+        project_path = _resolve_project_path(state)
+    except Exception as exc:
+        message = f"Unable to resolve scaffold project path: {exc}"
+        errors.append(message)
+        _record_validation_result(state, "non_empty_generation", False, errors, details)
+        _update_build_report(
+            state,
+            "validate_non_empty_generation",
+            success=False,
+            errors=errors,
+            details=details,
+        )
+        return state
+
+    project_details: Dict[str, Any] = {}
+
+    executor_path = project_path / "src" / "agent" / "executor.py"
+    if executor_path.exists():
+        project_details["executor_exists"] = True
+        try:
+            executor_contents = executor_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            errors.append(f"Unable to read executor.py: {exc}")
+        else:
+            project_details["executor_checked"] = True
+            if "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable]] = []" in executor_contents:
+                errors.append("executor.py has empty NODE_IMPLEMENTATIONS")
+    else:
+        project_details["executor_exists"] = False
+
+    graph_path = project_path / "src" / "agent" / "graph.py"
+    if graph_path.exists():
+        project_details["graph_exists"] = True
+        try:
+            graph_contents = graph_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            errors.append(f"Unable to read graph.py: {exc}")
+        else:
+            project_details["graph_checked"] = True
+            if "ARCHITECTURE_STATE = {}" in graph_contents or "json.loads('{}'" in graph_contents:
+                errors.append("graph.py has empty ARCHITECTURE_STATE")
+    else:
+        project_details["graph_exists"] = False
+
+    details.update(project_details)
+    success = not errors
+    _record_validation_result(state, "non_empty_generation", success, errors, details)
+    _update_build_report(
+        state,
+        "validate_non_empty_generation",
+        success=success,
+        errors=errors,
+        details=details,
+    )
+    return state
+
+
 def validate_syntax(state: ScaffoldState) -> ScaffoldState:
     """Validate that scaffolded node modules are syntactically correct."""
 

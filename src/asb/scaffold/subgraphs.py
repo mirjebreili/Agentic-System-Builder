@@ -16,7 +16,12 @@ from .build_nodes import (
     write_state_schema,
 )
 from .repair_nodes import fix_empty_nodes, fix_graph_compilation, fix_import_errors
-from .validate_nodes import validate_imports, validate_langgraph_compile, validate_syntax
+from .validate_nodes import (
+    validate_imports,
+    validate_langgraph_compile,
+    validate_non_empty_generation,
+    validate_syntax,
+)
 
 ScaffoldState = Dict[str, Any]
 
@@ -90,11 +95,13 @@ def create_build_subgraph() -> Any:
 
 def create_validate_subgraph() -> Any:
     graph = StateGraph(dict)
+    graph.add_node("validate_non_empty_generation", validate_non_empty_generation)
     graph.add_node("validate_syntax", validate_syntax)
     graph.add_node("validate_imports", validate_imports)
     graph.add_node("validate_langgraph_compile", validate_langgraph_compile)
 
-    graph.add_edge(START, "validate_syntax")
+    graph.add_edge(START, "validate_non_empty_generation")
+    graph.add_edge("validate_non_empty_generation", "validate_syntax")
     graph.add_edge("validate_syntax", "validate_imports")
     graph.add_edge("validate_imports", "validate_langgraph_compile")
     graph.add_edge("validate_langgraph_compile", END)
