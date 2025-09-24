@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
+
+from asb.utils.fileops import atomic_write, ensure_dir, read_text
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -31,49 +31,71 @@ def _get_root(state: Dict[str, Any]) -> Path:
     return Path(str(root_override))
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f"{path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
-    with tmp_path.open("wb") as handle:
-        handle.write(data)
-    os.replace(tmp_path, path)
-
-
 def _atomic_write_text(path: Path, contents: str) -> None:
-    _atomic_write(path, contents.encode("utf-8"))
+    ensure_dir(path.parent)
+    atomic_write(path, contents)
 
 
-def _atomic_copy(src: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dest.parent / f"{dest.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
-    with src.open("rb") as source, tmp_path.open("wb") as target:
-        shutil.copyfileobj(source, target)
-    os.replace(tmp_path, dest)
+def _copy_text_file(src: Path, dest: Path) -> str | None:
+    ensure_dir(dest.parent)
+    contents = read_text(src)
+    if contents is None:
+        return None
+    atomic_write(dest, contents)
+    return contents
+
+
+def _update_build_report(
+    state: Dict[str, Any], node_name: str, success: bool, errors: Iterable[str] | None = None
+) -> None:
+    scaffold = state.setdefault("scaffold", {})
+    if not isinstance(scaffold, dict):  # pragma: no cover - defensive
+        scaffold = {}
+        state["scaffold"] = scaffold
+    build_report = scaffold.setdefault("build_report", {})
+    status_key = f"{node_name}_status"
+    errors_key = f"{node_name}_errors"
+    build_report[status_key] = "complete" if success else "failed"
+    error_list = [str(err) for err in errors or [] if err]
+    if error_list:
+        build_report[errors_key] = error_list
+    else:
+        build_report.pop(errors_key, None)
 
 
 def init_project_structure(state: Dict[str, Any]) -> Path:
-    base_path = _get_base_path(state)
-    directories = [
-        base_path,
-        base_path / "prompts",
-        base_path / "src" / "agent",
-        base_path / "src" / "config",
-        base_path / "src" / "llm",
-        base_path / "tests",
-        base_path / "reports",
-    ]
-    for directory in directories:
-        directory.mkdir(parents=True, exist_ok=True)
+    node_name = "init_project_structure"
+    try:
+        base_path = _get_base_path(state)
+        directories = [
+            base_path,
+            base_path / "prompts",
+            base_path / "src" / "agent",
+            base_path / "src" / "config",
+            base_path / "src" / "llm",
+            base_path / "tests",
+            base_path / "reports",
+        ]
+        for directory in directories:
+            ensure_dir(directory)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
+    _update_build_report(state, node_name, True, [])
     return base_path
 
 
 def copy_base_files(state: Dict[str, Any]) -> List[str]:
-    base_path = _get_base_path(state)
-    root_path = _get_root(state)
+    node_name = "copy_base_files"
+    errors: List[str] = []
+    try:
+        base_path = _get_base_path(state)
+        root_path = _get_root(state)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
     files = {
         "src/config/settings.py": "src/config/settings.py",
         "src/asb/llm/client.py": "src/llm/client.py",
@@ -83,37 +105,45 @@ def copy_base_files(state: Dict[str, Any]) -> List[str]:
     missing_files: List[str] = []
     for src_rel, dest_rel in files.items():
         destination = base_path / dest_rel
-        destination.parent.mkdir(parents=True, exist_ok=True)
         src_path = root_path / src_rel
-        if src_path.exists():
-            _atomic_copy(src_path, destination)
-        else:
+        contents = _copy_text_file(src_path, destination)
+        if contents is None:
+            message = f"Template file missing, skipping: {src_path}"
             missing_files.append(str(src_path))
-            print(f"Template file missing, skipping: {src_path}")
+            errors.append(message)
+            print(message)
 
     env_example = root_path / ".env.example"
-    if env_example.exists():
-        _atomic_copy(env_example, base_path / ".env.example")
+    if _copy_text_file(env_example, base_path / ".env.example") is None and env_example.exists():
+        # Should not happen, but keep defensive logging
+        errors.append(f"Unable to copy {env_example}")
 
+    _update_build_report(state, node_name, not errors, errors)
     return missing_files
 
 
 def write_config_files(state: Dict[str, Any]) -> None:
-    base_path = _get_base_path(state)
+    node_name = "write_config_files"
+    try:
+        base_path = _get_base_path(state)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
 
-    langgraph_path = base_path / "langgraph.json"
-    langgraph_contents = json.dumps(
-        {
-            "graphs": {"agent": "src.agent.graph:graph"},
-            "dependencies": ["."],
-            "env": "./.env",
-        },
-        indent=2,
-    )
-    _atomic_write_text(langgraph_path, langgraph_contents)
+    try:
+        langgraph_path = base_path / "langgraph.json"
+        langgraph_contents = json.dumps(
+            {
+                "graphs": {"agent": "src.agent.graph:graph"},
+                "dependencies": ["."],
+                "env": "./.env",
+            },
+            indent=2,
+        )
+        _atomic_write_text(langgraph_path, langgraph_contents)
 
-    pyproject_path = base_path / "pyproject.toml"
-    pyproject_contents = """[project]
+        pyproject_path = base_path / "pyproject.toml"
+        pyproject_contents = """[project]
 name = \"generated-agent\"
 version = \"0.1.0\"
 requires-python = \">=3.11\"
@@ -138,7 +168,12 @@ build-backend = \"setuptools.build_meta\"
 [tool.setuptools.packages.find]
 where = [\"src\"]
 """
-    _atomic_write_text(pyproject_path, pyproject_contents)
+        _atomic_write_text(pyproject_path, pyproject_contents)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
+    _update_build_report(state, node_name, True, [])
 
 
 def _normalize_generated_key(value: str) -> str:
@@ -170,13 +205,20 @@ def _get_generated_content(state: Dict[str, Any], *candidates: str) -> str | Non
 def write_state_schema(state: Dict[str, Any]) -> None:
     from asb.agent.scaffold import generate_enhanced_state_schema
 
-    state_path = _get_base_path(state) / "src" / "agent" / "state.py"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    contents = _get_generated_content(state, "state.py", "src/agent/state.py", "agent/state.py")
-    if contents is None:
-        plan = state.get("_scaffold_architecture_plan")
-        contents = generate_enhanced_state_schema(plan if isinstance(plan, dict) else {})
-    _atomic_write_text(state_path, contents)
+    node_name = "write_state_schema"
+    try:
+        state_path = _get_base_path(state) / "src" / "agent" / "state.py"
+        ensure_dir(state_path.parent)
+        contents = _get_generated_content(state, "state.py", "src/agent/state.py", "agent/state.py")
+        if contents is None:
+            plan = state.get("_scaffold_architecture_plan")
+            contents = generate_enhanced_state_schema(plan if isinstance(plan, dict) else {})
+        _atomic_write_text(state_path, contents)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
+    _update_build_report(state, node_name, True, [])
 
 
 def _build_plan_node_specs(architecture_plan: Dict[str, Any]) -> List[Tuple[str, str, List[str], Dict[str, Any]]]:
@@ -275,49 +317,64 @@ def write_node_modules(
 ) -> Tuple[List[Dict[str, str]], List[Tuple[str, str, List[str], Dict[str, Any]]]]:
     from asb.agent import scaffold as scaffold_module
 
-    base = _get_base_path(state)
-    agent_dir = base / "src" / "agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    architecture_plan = state.get("_scaffold_architecture_plan") or {}
-    user_goal = state.get("_scaffold_user_goal") or ""
-    generated_nodes = scaffold_module.generate_nodes_from_architecture(architecture_plan, user_goal)
-    node_specs = (
-        _build_plan_node_specs(architecture_plan)
-        if generated_nodes
-        else scaffold_module._collect_architecture_nodes(state.get("architecture") or {})
-    )
-    if generated_nodes:
-        _write_generated_nodes(agent_dir, generated_nodes, node_specs, state)
-    elif node_specs:
-        _write_existing_node_modules(base, node_specs, state, user_goal)
-    node_definitions = _build_node_definitions(agent_dir, node_specs)
+    node_name = "write_node_modules"
+    try:
+        base = _get_base_path(state)
+        agent_dir = base / "src" / "agent"
+        ensure_dir(agent_dir)
+        architecture_plan = state.get("_scaffold_architecture_plan") or {}
+        user_goal = state.get("_scaffold_user_goal") or ""
+        generated_nodes = scaffold_module.generate_nodes_from_architecture(architecture_plan, user_goal)
+        node_specs = (
+            _build_plan_node_specs(architecture_plan)
+            if generated_nodes
+            else scaffold_module._collect_architecture_nodes(state.get("architecture") or {})
+        )
+        if generated_nodes:
+            _write_generated_nodes(agent_dir, generated_nodes, node_specs, state)
+        elif node_specs:
+            _write_existing_node_modules(base, node_specs, state, user_goal)
+        node_definitions = _build_node_definitions(agent_dir, node_specs)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
+    _update_build_report(state, node_name, True, [])
     return node_definitions, node_specs
 
 
 def write_graph_module(state: Dict[str, Any]) -> None:
     from asb.agent import scaffold as scaffold_module
 
-    agent_dir = _get_base_path(state) / "src" / "agent"
-    executor_source = _get_generated_content(
-        state,
-        "executor.py",
-        "src/agent/executor.py",
-        "agent/executor.py",
-    )
-    node_definitions = state.get("_scaffold_node_definitions") or []
-    if executor_source is None:
-        executor_source = scaffold_module._render_executor_module(node_definitions)
-    _atomic_write_text(agent_dir / "executor.py", executor_source)
-    graph_source = _get_generated_content(
-        state,
-        "graph.py",
-        "src/agent/graph.py",
-        "agent/graph.py",
-    )
-    plan = state.get("_scaffold_architecture_plan")
-    graph_plan = dict(plan) if isinstance(plan, dict) else {}
-    graph_plan["_node_definitions"] = node_definitions
-    if graph_source is None:
-        graph_source = scaffold_module.generate_dynamic_workflow_module(graph_plan)
-    _atomic_write_text(agent_dir / "graph.py", graph_source)
+    node_name = "write_graph_module"
+    try:
+        agent_dir = _get_base_path(state) / "src" / "agent"
+        ensure_dir(agent_dir)
+        executor_source = _get_generated_content(
+            state,
+            "executor.py",
+            "src/agent/executor.py",
+            "agent/executor.py",
+        )
+        node_definitions = state.get("_scaffold_node_definitions") or []
+        if executor_source is None:
+            executor_source = scaffold_module._render_executor_module(node_definitions)
+        _atomic_write_text(agent_dir / "executor.py", executor_source)
+        graph_source = _get_generated_content(
+            state,
+            "graph.py",
+            "src/agent/graph.py",
+            "agent/graph.py",
+        )
+        plan = state.get("_scaffold_architecture_plan")
+        graph_plan = dict(plan) if isinstance(plan, dict) else {}
+        graph_plan["_node_definitions"] = node_definitions
+        if graph_source is None:
+            graph_source = scaffold_module.generate_dynamic_workflow_module(graph_plan)
+        _atomic_write_text(agent_dir / "graph.py", graph_source)
+    except Exception as exc:
+        _update_build_report(state, node_name, False, [str(exc)])
+        raise
+
+    _update_build_report(state, node_name, True, [])
 

@@ -8,7 +8,28 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping
+
+
+def _update_build_report(
+    state: MutableMapping[str, Any],
+    node_name: str,
+    success: bool,
+    errors: Iterable[str] | None = None,
+) -> None:
+    scaffold = state.setdefault("scaffold", {})
+    if not isinstance(scaffold, MutableMapping):  # pragma: no cover - defensive
+        scaffold = {}
+        state["scaffold"] = scaffold
+    build_report = scaffold.setdefault("build_report", {})
+    status_key = f"{node_name}_status"
+    errors_key = f"{node_name}_errors"
+    build_report[status_key] = "complete" if success else "failed"
+    error_list = [str(err) for err in errors or [] if err]
+    if error_list:
+        build_report[errors_key] = error_list
+    else:
+        build_report.pop(errors_key, None)
 
 ScaffoldState = Dict[str, Any]
 
@@ -141,6 +162,7 @@ def _record_validation_result(
 def validate_syntax(state: ScaffoldState) -> ScaffoldState:
     """Validate that scaffolded node modules are syntactically correct."""
 
+    node_name = "validate_syntax"
     phase, started = _start_phase(
         state,
         "validate_syntax",
@@ -158,6 +180,7 @@ def validate_syntax(state: ScaffoldState) -> ScaffoldState:
         summary = "Node syntax validation could not start."
         _finish_phase(state, phase, started, success=False, summary=summary, details=details, errors=errors)
         _record_validation_result(state, "syntax", False, errors, details)
+        _update_build_report(state, node_name, False, errors)
         return state
 
     node_modules = _collect_node_module_paths(project_path)
@@ -169,6 +192,7 @@ def validate_syntax(state: ScaffoldState) -> ScaffoldState:
         details.update({"checked_modules": [], "missing_modules": []})
         _finish_phase(state, phase, started, success=True, summary=summary, details=details, errors=[])
         _record_validation_result(state, "syntax", True, [], details)
+        _update_build_report(state, node_name, True, [])
         return state
 
     for name, path in node_modules.items():
@@ -207,6 +231,7 @@ def validate_syntax(state: ScaffoldState) -> ScaffoldState:
     summary = "Node syntax validation passed." if success else "Node syntax validation detected issues."
     _finish_phase(state, phase, started, success=success, summary=summary, details=details, errors=errors)
     _record_validation_result(state, "syntax", success, errors, details)
+    _update_build_report(state, node_name, success, errors)
     return state
 
 
@@ -236,6 +261,7 @@ def _has_required_imports(tree: ast.AST) -> tuple[bool, bool]:
 def validate_imports(state: ScaffoldState) -> ScaffoldState:
     """Ensure scaffolded node modules import expected dependencies."""
 
+    node_name = "validate_imports"
     phase, started = _start_phase(
         state,
         "validate_imports",
@@ -253,6 +279,7 @@ def validate_imports(state: ScaffoldState) -> ScaffoldState:
         summary = "Node import validation could not start."
         _finish_phase(state, phase, started, success=False, summary=summary, details=details, errors=errors)
         _record_validation_result(state, "imports", False, errors, details)
+        _update_build_report(state, node_name, False, errors)
         return state
 
     node_modules = _collect_node_module_paths(project_path)
@@ -263,6 +290,7 @@ def validate_imports(state: ScaffoldState) -> ScaffoldState:
         details.update({"checked_modules": []})
         _finish_phase(state, phase, started, success=True, summary=summary, details=details, errors=[])
         _record_validation_result(state, "imports", True, [], details)
+        _update_build_report(state, node_name, True, [])
         return state
 
     for name, path in node_modules.items():
@@ -296,12 +324,14 @@ def validate_imports(state: ScaffoldState) -> ScaffoldState:
     summary = "Node import validation passed." if success else "Node import validation detected issues."
     _finish_phase(state, phase, started, success=success, summary=summary, details=details, errors=errors)
     _record_validation_result(state, "imports", success, errors, details)
+    _update_build_report(state, node_name, success, errors)
     return state
 
 
 def validate_langgraph_compile(state: ScaffoldState) -> ScaffoldState:
     """Verify that the scaffolded LangGraph can be imported and compiled."""
 
+    node_name = "validate_langgraph_compile"
     phase, started = _start_phase(
         state,
         "validate_langgraph_compile",
@@ -319,6 +349,7 @@ def validate_langgraph_compile(state: ScaffoldState) -> ScaffoldState:
         summary = "LangGraph compilation validation could not start."
         _finish_phase(state, phase, started, success=False, summary=summary, details=details, errors=errors)
         _record_validation_result(state, "langgraph_compile", False, errors, details)
+        _update_build_report(state, node_name, False, errors)
         return state
 
     src_dir = project_path / "src"
@@ -327,6 +358,7 @@ def validate_langgraph_compile(state: ScaffoldState) -> ScaffoldState:
         summary = "LangGraph compilation validation failed."
         _finish_phase(state, phase, started, success=False, summary=summary, details=details, errors=errors)
         _record_validation_result(state, "langgraph_compile", False, errors, details)
+        _update_build_report(state, node_name, False, errors)
         return state
 
     sys_path_entry = str(project_path)
@@ -377,4 +409,5 @@ def validate_langgraph_compile(state: ScaffoldState) -> ScaffoldState:
     summary = "LangGraph graph compiled successfully." if success else "LangGraph compilation validation detected issues."
     _finish_phase(state, phase, started, success=success, summary=summary, details=details, errors=errors)
     _record_validation_result(state, "langgraph_compile", success, errors, details)
+    _update_build_report(state, node_name, success, errors)
     return state

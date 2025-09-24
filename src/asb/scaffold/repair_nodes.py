@@ -3,18 +3,35 @@ from __future__ import annotations
 """Heuristics for repairing scaffolded LangGraph node modules."""
 
 from collections.abc import Mapping, Sequence
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Tuple
-import re
 
 from asb.agent import scaffold as scaffold_module
 from asb.agent.scaffold import generate_generic_node_template
 
-from .build_nodes import (
-    _atomic_write_text,
-    _build_node_definitions,
-    _build_plan_node_specs,
-)
+from .build_nodes import _atomic_write_text, _build_node_definitions, _build_plan_node_specs
+
+
+def _update_build_report(
+    state: MutableMapping[str, Any],
+    node_name: str,
+    success: bool,
+    errors: Iterable[str] | None = None,
+) -> None:
+    scaffold = state.setdefault("scaffold", {})
+    if not isinstance(scaffold, MutableMapping):  # pragma: no cover - defensive
+        scaffold = {}
+        state["scaffold"] = scaffold
+    build_report = scaffold.setdefault("build_report", {})
+    status_key = f"{node_name}_status"
+    errors_key = f"{node_name}_errors"
+    build_report[status_key] = "complete" if success else "failed"
+    error_list = [str(err) for err in errors or [] if err]
+    if error_list:
+        build_report[errors_key] = error_list
+    else:
+        build_report.pop(errors_key, None)
 
 
 _EXCLUDED_NODE_FILES = {
@@ -198,8 +215,9 @@ def _render_repaired_node(module_name: str, state: Mapping[str, Any]) -> str:
 def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Rewrite empty node modules with a generic fallback implementation."""
 
+    node_name = "fix_empty_nodes"
     matches = _parse_error_entries(
-        state, lambda module, detail, _msg: detail.startswith("node file is empty")
+        state, lambda module, detail, _msg: detail.lower().startswith("node file is empty")
     )
     if not matches:
         _record_repair_result(
@@ -210,6 +228,7 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
             errors=[],
             details={"reason": "no empty node errors detected"},
         )
+        _update_build_report(state, node_name, True, [])
         return state
 
     fixed: List[str] = []
@@ -218,7 +237,9 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "empty_nodes", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "empty_nodes", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, False, [error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -259,6 +280,7 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
             _remove_scaffold_messages(state, resolved)
 
     _record_repair_result(state, "empty_nodes", success=not failures, fixed=fixed, errors=failures)
+    _update_build_report(state, node_name, not failures, failures)
     return state
 
 
@@ -303,6 +325,7 @@ def _insert_missing_imports(source: str, imports: Sequence[str]) -> str:
 def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Inject missing AppState/client imports into node modules."""
 
+    node_name = "fix_import_errors"
     matches = _parse_error_entries(
         state, lambda _module, detail, _msg: "missing required imports" in detail
     )
@@ -315,6 +338,7 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
             errors=[],
             details={"reason": "no import errors detected"},
         )
+        _update_build_report(state, node_name, True, [])
         return state
 
     fixed: List[str] = []
@@ -323,7 +347,9 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "import_errors", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "import_errors", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, False, [error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -365,6 +391,7 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
             _remove_scaffold_messages(state, resolved)
 
     _record_repair_result(state, "import_errors", success=not failures, fixed=fixed, errors=failures)
+    _update_build_report(state, node_name, not failures, failures)
     return state
 
 
@@ -392,6 +419,7 @@ def _coalesce_architecture_plan(state: Mapping[str, Any]) -> Dict[str, Any]:
 def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Re-render the generated graph module when compilation fails."""
 
+    node_name = "fix_graph_compilation"
     def _is_graph_failure(_module: str, detail: str, message: str) -> bool:
         target = detail or message
         lowered = target.lower()
@@ -407,6 +435,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
             errors=[],
             details={"reason": "no graph compilation errors detected"},
         )
+        _update_build_report(state, node_name, True, [])
         return state
 
     fixed: List[str] = []
@@ -415,7 +444,9 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, False, [error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -423,6 +454,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     if not graph_path.exists():
         failures.append(f"graph: module file not found at {graph_path}")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, False, failures)
         return state
 
     architecture_plan = _coalesce_architecture_plan(state)
@@ -447,6 +479,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     except Exception as exc:
         failures.append(f"graph: unable to determine node definitions ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, False, failures)
         return state
 
     graph_plan = dict(architecture_plan)
@@ -457,6 +490,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     except Exception as exc:
         failures.append(f"graph: failed to render graph module ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, False, failures)
         return state
 
     try:
@@ -464,9 +498,11 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     except Exception as exc:  # pragma: no cover - filesystem errors are rare
         failures.append(f"graph: failed to write repaired graph module ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, False, failures)
         return state
 
     fixed.append("graph.py")
     _remove_scaffold_messages(state, [match[2] for match in matches])
     _record_repair_result(state, "graph_compilation", success=True, fixed=fixed, errors=[])
+    _update_build_report(state, node_name, True, [])
     return state
