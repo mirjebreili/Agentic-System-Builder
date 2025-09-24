@@ -106,4 +106,12 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
 
     msgs = list(state.get("messages") or [])
     msgs.append({"role":"assistant","content":f"Selected ToT plan (score={scored[0][0]:.2f})."})
+
+    try:
+        from asb.agent.executor import update_node_implementations
+
+        update_node_implementations(best)
+    except Exception:
+        logger.debug("Unable to update node implementations for plan.", exc_info=True)
+
     return {"plan": best, "messages": msgs, "flags":{"more_steps": True, "steps_done": False}}

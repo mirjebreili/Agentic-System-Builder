@@ -23,19 +23,28 @@ def test_agents(state: Dict[str, Any]) -> Dict[str, Any]:
     # Executor dry test
     ok_exec, reason_e, steps_used = True, "", 0
     try:
-        demo = {"plan": {"goal":"demo",
-                         "nodes":[
-                           {"id":"plan","type":"llm","prompt":"List two steps then DONE."},
-                           {"id":"do","type":"llm","prompt":"Say STEP 1, then STEP 2, then DONE."},
-                           {"id":"finish","type":"llm","prompt":"Summarize in one line."}],
-                         "edges":[
-                           {"from":"plan","to":"do"},
-                           {"from":"do","to":"do","if":"more_steps"},
-                           {"from":"do","to":"finish","if":"steps_done"}]},
-                "messages":[],"flags":{"more_steps":True,"steps_done":False}}
+        demo = {
+            "plan": {
+                "goal": "demo",
+                "nodes": [
+                    {"id": "plan", "type": "llm", "prompt": "List two steps then DONE."},
+                    {"id": "do", "type": "llm", "prompt": "Say STEP 1, then STEP 2, then DONE."},
+                    {"id": "finish", "type": "llm", "prompt": "Summarize in one line."},
+                ],
+                "edges": [
+                    {"from": "plan", "to": "do"},
+                    {"from": "do", "to": "do", "if": "more_steps"},
+                    {"from": "do", "to": "finish", "if": "steps_done"},
+                ],
+            },
+            "messages": [],
+            "flags": {"more_steps": True, "steps_done": False},
+        }
         est = execute_deep(demo)
-        steps_used = sum(1 for m in est["messages"] if m.get("content","").startswith("[do]"))
-        assert any(m.get("content","").startswith("[finish]") for m in est["messages"])
+        results = est.get("results") or {}
+        steps_used = len(results)
+        assert {"plan", "do", "finish"}.issubset(results)
+        assert est.get("last_node") == "finish"
     except Exception as e:
         ok_exec, reason_e = False, f"executor test failed: {e}"
 
