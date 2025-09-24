@@ -1,20 +1,17 @@
-from __future__ import annotations
-
 """Heuristics for repairing scaffolded LangGraph node modules."""
 
+from __future__ import annotations
+
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Tuple
-import re
 
 from asb.agent import scaffold as scaffold_module
 from asb.agent.scaffold import generate_generic_node_template
+from asb.utils.fileops import atomic_write, ensure_dir
 
-from .build_nodes import (
-    _atomic_write_text,
-    _build_node_definitions,
-    _build_plan_node_specs,
-)
+from .build_nodes import _build_node_definitions, _build_plan_node_specs
 
 
 _EXCLUDED_NODE_FILES = {
@@ -135,6 +132,28 @@ def _collect_scaffold_errors(state: Mapping[str, Any]) -> List[str]:
     return []
 
 
+def _update_build_report(
+    state: MutableMapping[str, Any],
+    node: str,
+    *,
+    success: bool,
+    errors: Iterable[str] | None = None,
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    scaffold = state.setdefault("scaffold", {})
+    if not isinstance(scaffold, MutableMapping):  # pragma: no cover - defensive
+        scaffold = {}
+        state["scaffold"] = scaffold
+    build_report = scaffold.setdefault("build_report", {})
+    build_report[f"{node}_status"] = "complete" if success else "failed"
+    if errors:
+        build_report[f"{node}_errors"] = list(errors)
+    else:
+        build_report.pop(f"{node}_errors", None)
+    if details is not None:
+        build_report[f"{node}_details"] = dict(details)
+
+
 def _record_repair_result(
     state: MutableMapping[str, Any],
     name: str,
@@ -198,18 +217,21 @@ def _render_repaired_node(module_name: str, state: Mapping[str, Any]) -> str:
 def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Rewrite empty node modules with a generic fallback implementation."""
 
+    node_name = "fix_empty_nodes"
     matches = _parse_error_entries(
         state, lambda module, detail, _msg: detail.startswith("node file is empty")
     )
     if not matches:
+        details = {"reason": "no empty node errors detected"}
         _record_repair_result(
             state,
             "empty_nodes",
             success=True,
             fixed=[],
             errors=[],
-            details={"reason": "no empty node errors detected"},
+            details=details,
         )
+        _update_build_report(state, node_name, success=True, details={"fixed": [], "failures": [], **details})
         return state
 
     fixed: List[str] = []
@@ -218,7 +240,9 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "empty_nodes", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "empty_nodes", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, success=False, errors=[error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -243,7 +267,8 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
             failures.append(f"{target_module}: failed to generate fallback implementation ({exc})")
             continue
         try:
-            _atomic_write_text(module_path, replacement)
+            ensure_dir(module_path.parent)
+            atomic_write(module_path, replacement)
         except Exception as exc:  # pragma: no cover - filesystem errors are rare
             failures.append(f"{target_module}: failed to write repaired source ({exc})")
             continue
@@ -258,7 +283,15 @@ def fix_empty_nodes(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]
         if resolved:
             _remove_scaffold_messages(state, resolved)
 
-    _record_repair_result(state, "empty_nodes", success=not failures, fixed=fixed, errors=failures)
+    success = not failures
+    _record_repair_result(state, "empty_nodes", success=success, fixed=fixed, errors=failures)
+    _update_build_report(
+        state,
+        node_name,
+        success=success,
+        errors=failures,
+        details={"fixed": fixed, "failures": failures},
+    )
     return state
 
 
@@ -303,17 +336,25 @@ def _insert_missing_imports(source: str, imports: Sequence[str]) -> str:
 def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """Inject missing AppState/client imports into node modules."""
 
+    node_name = "fix_import_errors"
     matches = _parse_error_entries(
         state, lambda _module, detail, _msg: "missing required imports" in detail
     )
     if not matches:
+        details = {"reason": "no import errors detected"}
         _record_repair_result(
             state,
             "import_errors",
             success=True,
             fixed=[],
             errors=[],
-            details={"reason": "no import errors detected"},
+            details=details,
+        )
+        _update_build_report(
+            state,
+            node_name,
+            success=True,
+            details={"fixed": [], "failures": [], **details},
         )
         return state
 
@@ -323,7 +364,9 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "import_errors", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "import_errors", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, success=False, errors=[error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -349,7 +392,8 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
             continue
         updated = _insert_missing_imports(contents, additions)
         try:
-            _atomic_write_text(module_path, updated)
+            ensure_dir(module_path.parent)
+            atomic_write(module_path, updated)
         except Exception as exc:  # pragma: no cover - filesystem errors are rare
             failures.append(f"{target_module}: failed to write repaired source ({exc})")
             continue
@@ -364,7 +408,15 @@ def fix_import_errors(state: MutableMapping[str, Any]) -> MutableMapping[str, An
         if resolved:
             _remove_scaffold_messages(state, resolved)
 
-    _record_repair_result(state, "import_errors", success=not failures, fixed=fixed, errors=failures)
+    success = not failures
+    _record_repair_result(state, "import_errors", success=success, fixed=fixed, errors=failures)
+    _update_build_report(
+        state,
+        node_name,
+        success=success,
+        errors=failures,
+        details={"fixed": fixed, "failures": failures},
+    )
     return state
 
 
@@ -397,15 +449,23 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
         lowered = target.lower()
         return "generate_dynamic_workflow failed" in lowered or "unable to import generated graph module" in lowered
 
+    node_name = "fix_graph_compilation"
     matches = _parse_error_entries(state, _is_graph_failure)
     if not matches:
+        details = {"reason": "no graph compilation errors detected"}
         _record_repair_result(
             state,
             "graph_compilation",
             success=True,
             fixed=[],
             errors=[],
-            details={"reason": "no graph compilation errors detected"},
+            details=details,
+        )
+        _update_build_report(
+            state,
+            node_name,
+            success=True,
+            details={"fixed": [], "failures": [], **details},
         )
         return state
 
@@ -415,7 +475,9 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     try:
         project_path = _resolve_project_path(state)
     except ValueError as exc:
-        _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=[str(exc)])
+        error_message = str(exc)
+        _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=[error_message])
+        _update_build_report(state, node_name, success=False, errors=[error_message])
         return state
 
     agent_dir = project_path / "src" / "agent"
@@ -423,6 +485,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     if not graph_path.exists():
         failures.append(f"graph: module file not found at {graph_path}")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, success=False, errors=failures, details={"fixed": [], "failures": failures})
         return state
 
     architecture_plan = _coalesce_architecture_plan(state)
@@ -447,6 +510,7 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     except Exception as exc:
         failures.append(f"graph: unable to determine node definitions ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, success=False, errors=failures, details={"fixed": [], "failures": failures})
         return state
 
     graph_plan = dict(architecture_plan)
@@ -457,16 +521,25 @@ def fix_graph_compilation(state: MutableMapping[str, Any]) -> MutableMapping[str
     except Exception as exc:
         failures.append(f"graph: failed to render graph module ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, success=False, errors=failures, details={"fixed": [], "failures": failures})
         return state
 
     try:
-        _atomic_write_text(graph_path, new_graph_source)
+        ensure_dir(graph_path.parent)
+        atomic_write(graph_path, new_graph_source)
     except Exception as exc:  # pragma: no cover - filesystem errors are rare
         failures.append(f"graph: failed to write repaired graph module ({exc})")
         _record_repair_result(state, "graph_compilation", success=False, fixed=[], errors=failures)
+        _update_build_report(state, node_name, success=False, errors=failures, details={"fixed": [], "failures": failures})
         return state
 
     fixed.append("graph.py")
     _remove_scaffold_messages(state, [match[2] for match in matches])
     _record_repair_result(state, "graph_compilation", success=True, fixed=fixed, errors=[])
+    _update_build_report(
+        state,
+        node_name,
+        success=True,
+        details={"fixed": fixed, "failures": []},
+    )
     return state

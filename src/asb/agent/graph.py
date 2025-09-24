@@ -14,7 +14,7 @@ from asb.agent.requirements_analyzer import requirements_analyzer_node
 from asb.agent.architecture_designer import architecture_designer_node
 from asb.agent.state_generator import state_generator_node
 from asb.agent.node_implementor import node_implementor_node
-from asb.agent.scaffold import scaffold_project
+from asb.scaffold.coordinator import scaffold_coordinator
 from asb.agent.syntax_validator import syntax_validator_node
 from asb.agent.code_fixer import code_fixer_node
 from asb.agent.sandbox import comprehensive_sandbox_test as sandbox_smoke
@@ -86,7 +86,7 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_node("architecture_designer", architecture_designer_node)
     g.add_node("state_generator", state_generator_node)
     g.add_node("node_implementor", node_implementor_node)
-    g.add_node("scaffold_project", scaffold_project)
+    g.add_node("scaffold_coordinator", scaffold_coordinator)
     g.add_node("syntax_validator", syntax_validator_node)
     g.add_node("code_fixer", code_fixer_node)
     g.add_node("sandbox_smoke", sandbox_smoke)
@@ -108,12 +108,12 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         "syntax_validator",
         route_after_validation,
         {
-            "complete": "scaffold_project",
+            "complete": "scaffold_coordinator",
             "fix_code": "code_fixer",
-            "force_complete": "scaffold_project",
+            "force_complete": "scaffold_coordinator",
         },
     )
-    g.add_edge("scaffold_project", "sandbox_smoke")
+    g.add_edge("scaffold_coordinator", "sandbox_smoke")
     g.add_conditional_edges(
         "code_fixer",
         route_after_fixer,

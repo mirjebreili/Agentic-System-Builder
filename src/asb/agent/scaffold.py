@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from asb.scaffold.build_nodes import (
     SCAFFOLD_BASE_PATH_KEY,
     SCAFFOLD_ROOT_KEY,
-    _atomic_write_text,
     copy_base_files,
     init_project_structure,
     write_config_files,
@@ -14,6 +13,7 @@ from asb.scaffold.build_nodes import (
     write_node_modules,
     write_state_schema,
 )
+from asb.utils.fileops import atomic_write, ensure_dir
 
 
 _BASE_STATE_FIELDS: List[tuple[str, str]] = [
@@ -1058,11 +1058,13 @@ def _ensure_tot_utils(agent_dir: Path, generated: Dict[str, str]) -> None:
         "agent/utils.py",
     )
     if provided is not None:
-        _atomic_write_text(utils_path, provided)
+        ensure_dir(utils_path.parent)
+        atomic_write(utils_path, provided)
         return
 
     if not utils_path.exists():
-        _atomic_write_text(utils_path, TOT_UTILS_TEMPLATE)
+        ensure_dir(utils_path.parent)
+        atomic_write(utils_path, TOT_UTILS_TEMPLATE)
 
 
 def _render_generate_thoughts(node_id: str, sanitized: str) -> str:
@@ -2089,7 +2091,7 @@ def _write_node_modules(
     errors: List[str],
 ) -> None:
     agent_dir = base / "src" / "agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
+    ensure_dir(agent_dir)
 
     self_correcting_modules, self_correcting_helpers = generate_self_correcting_nodes(
         node_specs,
@@ -2108,11 +2110,13 @@ def _write_node_modules(
             provided_helper = None
 
         if provided_helper is not None:
-            _atomic_write_text(helper_path, provided_helper)
+            ensure_dir(helper_path.parent)
+            atomic_write(helper_path, provided_helper)
             continue
 
         if not helper_path.exists():
-            _atomic_write_text(helper_path, helper_source)
+            ensure_dir(helper_path.parent)
+            atomic_write(helper_path, helper_source)
             helper_entry = str(helper_path)
             if helper_entry not in missing_files:
                 missing_files.append(helper_entry)
@@ -2181,7 +2185,8 @@ def _write_node_modules(
             if missing_entry not in missing_files:
                 missing_files.append(missing_entry)
 
-        _atomic_write_text(destination, source)
+        ensure_dir(destination.parent)
+        atomic_write(destination, source)
         _validate_node_module(
             destination,
             node_id,
