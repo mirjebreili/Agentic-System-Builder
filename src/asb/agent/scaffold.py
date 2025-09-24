@@ -2222,56 +2222,54 @@ def _detect_node_callable(module_path: Path, hints: Iterable[str]) -> str:
 def _render_executor_module(
     node_definitions: List[Dict[str, str]]
 ) -> str:
-    lines: List[str] = [
-        "# generated",
-        "from __future__ import annotations",
-        "",
-        "from typing import Any, Callable, Dict, Iterable, List, Tuple",
-    ]
+    """Render the executor template with populated node implementations."""
 
-    if node_definitions:
-        lines.append("")
-        for entry in node_definitions:
-            module = entry["module"]
-            target = entry["callable"]
-            alias = entry.get("alias") or module
-            if target == alias:
-                lines.append(f"from .{module} import {target}")
-            else:
-                lines.append(f"from .{module} import {target} as {alias}")
-
-    lines.extend(
-        [
-            "",
-            "",
-            "NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = [",
-        ]
-    )
+    imports: List[str] = []
+    implementations: List[str] = []
 
     for entry in node_definitions:
-        alias = entry.get("alias") or entry["module"]
-        lines.append(f"    ({entry['id']!r}, {alias}),")
+        node_id = entry.get("id", "")
+        module_name = entry.get("module", "")
+        target = entry.get("callable") or module_name
+        alias = entry.get("alias") or module_name or target
 
-    lines.extend(
-        [
-            "]",
-            "",
-            "",
-            "def iter_node_callables() -> Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:",
-            "    for spec in NODE_IMPLEMENTATIONS:",
-            "        yield spec",
-            "",
-            "",
-            "def execute(state: Dict[str, Any]) -> Dict[str, Any]:",
-            "    current = state",
-            "    for _, node_callable in NODE_IMPLEMENTATIONS:",
-            "        current = node_callable(current)",
-            "    return current",
-            "",
-        ]
-    )
+        if not node_id or not module_name or not target:
+            continue
 
-    return "\n".join(lines) + "\n"
+        if alias != target:
+            imports.append(f"from .{module_name} import {target} as {alias}")
+        else:
+            imports.append(f"from .{module_name} import {target}")
+        implementations.append(f"('{node_id}', {alias})")
+
+    import_section = "\n".join(imports)
+    impl_section = ",\n    ".join(implementations)
+    impl_block = f"    {impl_section}\n" if impl_section else ""
+
+    template = f"""# generated
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, Iterable, List, Tuple
+
+{import_section}
+
+NODE_IMPLEMENTATIONS: List[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]] = [
+{impl_block}]
+
+
+def iter_node_callables() -> Iterable[Tuple[str, Callable[[Dict[str, Any]], Dict[str, Any]]]]:
+    for spec in NODE_IMPLEMENTATIONS:
+        yield spec
+
+
+def execute(state: Dict[str, Any]) -> Dict[str, Any]:
+    current = state
+    for _, node_callable in NODE_IMPLEMENTATIONS:
+        current = node_callable(current)
+    return current
+"""
+
+    return template
 
 
 def _format_edge_endpoint(name: str) -> str:
@@ -2340,11 +2338,7 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
 
     architecture_payload: Dict[str, Any] = {}
     if isinstance(architecture_plan, dict):
-        architecture_payload = {
-            key: value
-            for key, value in architecture_plan.items()
-            if key != "_node_definitions"
-        }
+        architecture_payload = dict(architecture_plan)
 
     def _normalize_json_value(value: Any) -> Any:
         """Recursively sanitize values so they can be serialized to JSON."""
@@ -2376,7 +2370,8 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
     try:
         architecture_json = json.dumps(
             raw_payload,
-            indent=4,
+            indent=2,
+            ensure_ascii=False,
             sort_keys=True,
             default=str,
             allow_nan=False,
@@ -2386,7 +2381,8 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
         try:
             architecture_json = json.dumps(
                 normalized_payload,
-                indent=4,
+                indent=2,
+                ensure_ascii=False,
                 sort_keys=True,
                 allow_nan=False,
             )
@@ -2399,6 +2395,9 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
     except json.JSONDecodeError as exc:
         logger.warning("Invalid architecture JSON detected: %s", exc)
         architecture_json = "{}"
+
+    if not architecture_json.strip() or architecture_json.strip() == "{}":
+        architecture_json = '{"error": "No architecture plan provided"}'
 
     lines: List[str] = [
         "# generated",
