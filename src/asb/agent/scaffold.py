@@ -13,6 +13,7 @@ from asb.scaffold.build_nodes import (
     write_node_modules,
     write_state_schema,
 )
+from asb.scaffold.validate_nodes import validate_state_schema_safety
 from asb.utils.fileops import atomic_write, ensure_dir
 
 
@@ -20,8 +21,8 @@ _BASE_STATE_FIELDS: List[tuple[str, str]] = [
     ("messages", "Annotated[List[AnyMessage], add_messages]"),
     ("goal", "str"),
     ("input_text", "str"),
-    ("plan", "Dict[str, Any]"),
-    ("architecture", "Dict[str, Any]"),
+    ("plan", "Annotated[Dict[str, Any], operator.or_]"),
+    ("architecture", "Annotated[Dict[str, Any], operator.or_]"),
     ("result", "str"),
     ("final_output", "str"),
     ("error", "str"),
@@ -100,8 +101,8 @@ def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> 
         "    input_text: str",
         "",
         "    # Planning/architecture",
-        "    plan: Dict[str, Any]",
-        "    architecture: Dict[str, Any]",
+        "    plan: Annotated[Dict[str, Any], operator.or_]",
+        "    architecture: Annotated[Dict[str, Any], operator.or_]",
         "",
         "    # Execution outputs",
         "    result: str",
@@ -343,8 +344,8 @@ def _collect_architecture_nodes(
 
 def _render_node_stub(node_id: str, sanitized: str) -> str:
     return (
-        "from typing import Any, Dict\n\n"
-        f"def {sanitized}(state: Dict[str, Any]) -> Dict[str, Any]:\n"
+        "from .state import AppState\n\n"
+        f"def {sanitized}(state: AppState) -> AppState:\n"
         f"    \"\"\"Placeholder implementation for node '{node_id}'.\"\"\"\n"
         "    return state\n"
     )
@@ -3083,6 +3084,10 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         write_state_schema(state)
+
+        schema_issues = validate_state_schema_safety(base)
+        for issue in schema_issues:
+            _append_scaffold_error(scaffold_errors, "state", issue)
 
         node_definitions, node_specs = write_node_modules(state)
         state["_scaffold_node_definitions"] = node_definitions

@@ -13,6 +13,41 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
 
+def validate_state_schema_safety(project_path: Path) -> List[str]:
+    """Ensure generated state schema includes required aggregators."""
+
+    issues: List[str] = []
+    state_file = project_path / "src" / "agent" / "state.py"
+
+    if not state_file.exists():
+        issues.append("state.py missing")
+        return issues
+
+    try:
+        state_content = state_file.read_text(encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - filesystem errors are unexpected
+        issues.append(f"Unable to read state.py: {exc}")
+        return issues
+
+    required_imports = [
+        "from typing import Any, Dict, List, TypedDict, Annotated",
+        "import operator",
+        "from langgraph.graph import add_messages",
+    ]
+
+    for statement in required_imports:
+        if statement not in state_content:
+            issues.append(f"Missing required import in state.py: {statement}")
+
+    if "Annotated[List[AnyMessage], add_messages]" not in state_content:
+        issues.append("messages field missing add_messages aggregator")
+
+    if "Annotated[Dict[str, Any], operator.or_]" not in state_content:
+        issues.append("Dict fields missing operator.or_ aggregator")
+
+    return issues
+
+
 def _update_build_report(
     state: ScaffoldState,
     node: str,
