@@ -11,63 +11,42 @@ from asb.agent.state_generator import generate_state_schema, state_generator_nod
 
 
 EXPECTED_APP_STATE_FIELDS = {
-    "architecture": "Dict[str, Any]",
-    "artifacts": "Dict[str, Any]",
-    "build_attempts": "int",
-    "code_fixes": "Dict[str, Any]",
-    "code_validation": "Dict[str, Any]",
-    "consecutive_failures": "int",
-    "coordinator_decision": "str",
-    "current_step": "Dict[str, bool]",
-    "debug": "Dict[str, Any]",
-    "error": "str",
-    "evaluations": "List[Dict[str, Any]]",
-    "fix_attempts": "int",
-    "fix_strategy_used": "str | None",
-    "flags": "Dict[str, bool]",
-    "generated_files": "Dict[str, str]",
+    "messages": "Annotated[List[AnyMessage], add_messages]",
     "goal": "str",
-    "implemented_nodes": "List[Dict[str, Any]]",
     "input_text": "str",
-    "last_implemented_node": "str | None",
-    "last_user_input": "str",
-    "messages": "List[ChatMessage]",
-    "metrics": "Dict[str, Any]",
-    "next_action": "str",
-    "passed": "bool",
     "plan": "Dict[str, Any]",
-    "replan": "bool",
-    "repair_start_time": "float",
-    "report": "Dict[str, Any]",
-    "requirements": "Dict[str, Any]",
-    "review": "Dict[str, Any]",
-    "sandbox": "Dict[str, Any]",
-    "scaffold": "Dict[str, Any]",
-    "scaffold_phase": "ScaffoldPhase",
-    "self_correction": "SelfCorrectionState",
-    "selected_thought": "Dict[str, Any]",
-    "syntax_validation": "Dict[str, Any]",
-    "tests": "Dict[str, Any]",
-    "thoughts": "List[str]",
-    "tot": "Dict[str, Any]",
-    "validation_errors": "List[str]",
+    "architecture": "Dict[str, Any]",
+    "result": "str",
+    "final_output": "str",
+    "error": "str",
+    "errors": "Annotated[List[str], operator.add]",
+    "scratch": "Annotated[Dict[str, Any], operator.or_]",
+    "scaffold": "Annotated[Dict[str, Any], operator.or_]",
+    "self_correction": "Annotated[Dict[str, Any], operator.or_]",
+    "tot": "Annotated[Dict[str, Any], operator.or_]",
 }
 
 EXPECTED_TEMPLATE_FIELDS = dict(EXPECTED_APP_STATE_FIELDS)
-EXPECTED_TEMPLATE_FIELDS["messages"] = "Annotated[List[AnyMessage], add_messages]"
-EXPECTED_TEMPLATE_FIELDS.pop("self_correction", None)
 
 
 def _parse_app_state_fields(source: str) -> dict[str, str]:
-    match = re.search(
-        r"class AppState\(TypedDict, total=False\):\n((?:    .+\n)+)", source
-    )
-    assert match, "AppState definition not found"
-    body = match.group(1)
+    sentinel = "class AppState(TypedDict, total=False):"
+    lines = source.splitlines()
+    try:
+        start_index = lines.index(sentinel)
+    except ValueError:  # pragma: no cover - defensive guard for malformed templates
+        assert False, "AppState definition not found"
+
     fields: dict[str, str] = {}
-    for line in body.splitlines():
+    for line in lines[start_index + 1 :]:
         stripped = line.strip()
-        if not stripped:
+        if not line.startswith("    "):
+            if not stripped:
+                continue
+            break
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
             continue
         name, annotation = stripped.split(":", 1)
         fields[name.strip()] = annotation.strip()
@@ -120,10 +99,8 @@ def test_generate_state_schema_infers_types_from_state_flow():
     for field, annotation in EXPECTED_TEMPLATE_FIELDS.items():
         assert fields[field] == annotation
 
-    assert fields["plan_result"] == "Dict[str, Any]"
-    assert fields["do_result"] == "Dict[str, Any]"
-    assert fields["finish_result"] == "Dict[str, Any]"
     assert fields["analysis_results"] == "Dict[str, Any]"
+    assert fields["requirements"] == "Dict[str, Any]"
     assert fields["task_steps"] == "List[Any]"
     assert fields["is_ready"] == "bool"
 
@@ -150,10 +127,8 @@ def test_generate_state_schema_adds_self_correction_fields_for_pattern():
 
     generated = generate_state_schema(state).get("generated_files", {}).get("state.py", "")
 
-    assert "class SelfCorrectionState" in generated
-
     fields = _parse_app_state_fields(generated)
-    assert fields["self_correction"] == "SelfCorrectionState"
+    assert fields["self_correction"] == "Annotated[Dict[str, Any], operator.or_]"
 
 
 def test_state_generator_node_appends_summary_message():

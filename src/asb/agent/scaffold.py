@@ -17,58 +17,20 @@ from asb.utils.fileops import atomic_write, ensure_dir
 
 
 _BASE_STATE_FIELDS: List[tuple[str, str]] = [
-    ("architecture", "Dict[str, Any]"),
-    ("artifacts", "Dict[str, Any]"),
-    ("build_attempts", "int"),
-    ("code_fixes", "Dict[str, Any]"),
-    ("code_validation", "Dict[str, Any]"),
-    ("consecutive_failures", "int"),
-    ("coordinator_decision", "str"),
-    ("current_step", "Dict[str, bool]"),
-    ("debug", "Dict[str, Any]"),
-    ("error", "str"),
-    ("evaluations", "List[Dict[str, Any]]"),
-    ("fix_attempts", "int"),
-    ("fix_strategy_used", "str | None"),
-    ("flags", "Dict[str, bool]"),
-    ("generated_files", "Dict[str, str]"),
-    ("goal", "str"),
-    ("implemented_nodes", "List[Dict[str, Any]]"),
-    ("input_text", "str"),
-    ("last_implemented_node", "str | None"),
-    ("last_user_input", "str"),
     ("messages", "Annotated[List[AnyMessage], add_messages]"),
-    ("metrics", "Dict[str, Any]"),
-    ("next_action", "str"),
-    ("passed", "bool"),
+    ("goal", "str"),
+    ("input_text", "str"),
     ("plan", "Dict[str, Any]"),
-    ("replan", "bool"),
-    ("repair_start_time", "float"),
-    ("report", "Dict[str, Any]"),
-    ("requirements", "Dict[str, Any]"),
-    ("review", "Dict[str, Any]"),
-    ("sandbox", "Dict[str, Any]"),
-    ("scaffold", "Dict[str, Any]"),
-    ("scaffold_phase", "ScaffoldPhase"),
-    ("selected_thought", "Dict[str, Any]"),
-    ("syntax_validation", "Dict[str, Any]"),
-    ("tests", "Dict[str, Any]"),
-    ("thoughts", "List[str]"),
-    ("tot", "Dict[str, Any]"),
-    ("validation_errors", "List[str]"),
+    ("architecture", "Dict[str, Any]"),
+    ("result", "str"),
+    ("final_output", "str"),
+    ("error", "str"),
+    ("errors", "Annotated[List[str], operator.add]"),
+    ("scratch", "Annotated[Dict[str, Any], operator.or_]"),
+    ("scaffold", "Annotated[Dict[str, Any], operator.or_]"),
+    ("self_correction", "Annotated[Dict[str, Any], operator.or_]"),
+    ("tot", "Annotated[Dict[str, Any], operator.or_]"),
 ]
-
-
-_SELF_CORRECTION_STATE_FIELDS: List[tuple[str, str]] = [
-    ("attempt", "int"),
-    ("awaiting_validation", "bool"),
-    ("history", "List[Dict[str, Any]]"),
-    ("latest_candidate", "str | None"),
-    ("max_attempts", "int"),
-    ("needs_revision", "bool"),
-    ("validation", "Dict[str, Any]"),
-]
-
 
 def _architecture_requires_self_correction(architecture_plan: Dict[str, Any] | None) -> bool:
     if not isinstance(architecture_plan, dict):
@@ -115,102 +77,52 @@ def _architecture_requires_self_correction(architecture_plan: Dict[str, Any] | N
 
 
 def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> str:
-    """Render the default state.py template with plan-aware result fields."""
+    """Render the default state.py template with safe aggregators."""
 
-    nodes: List[str] = []
-    if isinstance(architecture_plan, dict):
-        raw_nodes = architecture_plan.get("nodes")
-        if isinstance(raw_nodes, list):
-            seen: set[str] = set()
-            for entry in raw_nodes:
-                if not isinstance(entry, dict):
-                    continue
-                raw_name = (
-                    entry.get("name")
-                    or entry.get("id")
-                    or entry.get("label")
-                )
-                if raw_name is None:
-                    continue
-                sanitized = (
-                    re.sub(r"\W+", "_", str(raw_name)).strip("_").lower() or "node"
-                )
-                field_name = f"{sanitized}_result"
-                if field_name in seen:
-                    continue
-                seen.add(field_name)
-                nodes.append(field_name)
+    _ = architecture_plan  # architecture metadata may inform extensions later
 
     lines = [
         "from __future__ import annotations",
         "",
-        "from typing import Annotated, Any, Dict, List, Literal, TypedDict",
+        "from typing import Any, Dict, List, TypedDict, Annotated",
+        "import operator",
         "",
         "from langchain_core.messages import AnyMessage",
-        "from langgraph.graph.message import add_messages",
+        "from langgraph.graph import add_messages",
         "",
         "",
-        "class ChatMessage(TypedDict, total=False):",
-        '    role: Literal["human", "user", "assistant", "system", "tool"]',
-        "    content: str",
+        "class AppState(TypedDict, total=False):",
+        "    # Conversation/history",
+        "    messages: Annotated[List[AnyMessage], add_messages]",
+        "",
+        "    # Core inputs",
+        "    goal: str",
+        "    input_text: str",
+        "",
+        "    # Planning/architecture",
+        "    plan: Dict[str, Any]",
+        "    architecture: Dict[str, Any]",
+        "",
+        "    # Execution outputs",
+        "    result: str",
+        "    final_output: str",
+        "",
+        "    # Diagnostics",
+        "    error: str",
+        "    errors: Annotated[List[str], operator.add]",
+        "",
+        "    # Flexible scratchpad for intermediate values",
+        "    scratch: Annotated[Dict[str, Any], operator.or_]",
+        "",
+        "    # Build-time scaffolding diagnostics",
+        "    scaffold: Annotated[Dict[str, Any], operator.or_]",
+        "",
+        "    # Adaptive improvement metadata",
+        "    self_correction: Annotated[Dict[str, Any], operator.or_]",
+        "",
+        "    # Advanced reasoning containers",
+        "    tot: Annotated[Dict[str, Any], operator.or_]",
     ]
-
-    include_self_correction = _architecture_requires_self_correction(architecture_plan)
-
-    lines.extend(["", ""])
-
-    lines.append("class ScaffoldPhase(TypedDict, total=False):")
-    lines.append('    name: str')
-    lines.append('    description: str')
-    lines.append('    status: Literal["pending", "in_progress", "complete", "failed", "skipped"]')
-    lines.append('    started_at: float')
-    lines.append('    completed_at: float')
-    lines.append('    duration: float')
-    lines.append('    summary: str')
-    lines.append('    details: Dict[str, Any]')
-    lines.append('    error: str')
-
-    lines.extend(["", ""])
-
-    if include_self_correction:
-        lines.append("class SelfCorrectionState(TypedDict, total=False):")
-        for field_name, annotation in _SELF_CORRECTION_STATE_FIELDS:
-            lines.append(f"    {field_name}: {annotation}")
-
-        lines.extend(["", ""])
-
-    lines.append("class AppState(TypedDict, total=False):")
-
-    for field_name, annotation in _BASE_STATE_FIELDS:
-        lines.append(f"    {field_name}: {annotation}")
-
-    if include_self_correction:
-        lines.append("    self_correction: SelfCorrectionState")
-
-    for node_field in nodes:
-        lines.append(f"    {node_field}: Dict[str, Any]")
-
-    lines.extend(
-        [
-            "",
-            "",
-            "def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:",
-            '    """Add circuit breaker logic to prevent infinite loops"""',
-            "",
-            '    if "fix_attempts" not in state:',
-            '        state["fix_attempts"] = 0',
-            "",
-            '    if "consecutive_failures" not in state:',
-            '        state["consecutive_failures"] = 0',
-            "",
-            '    if "repair_start_time" not in state:',
-            "        import time",
-            "",
-            '        state["repair_start_time"] = time.time()',
-            "",
-            "    return state",
-        ]
-    )
 
     return "\n".join(lines) + "\n"
 
@@ -688,23 +600,17 @@ def select_top_evaluation(evaluations: List[Dict[str, Any]]) -> Optional[Dict[st
 
 
 def update_tot_state(state: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    new_state = dict(state)
     container = dict(state.get("tot") or {})
     container.update(updates)
-    new_state["tot"] = container
-    new_state.pop("error", None)
-    return new_state
+    return {"tot": container, "error": ""}
 
 
 def capture_tot_error(state: Dict[str, Any], node_id: str, error: Exception) -> Dict[str, Any]:
-    new_state = dict(state)
     container = dict(state.get("tot") or {})
     errors = list(container.get("errors") or [])
     errors.append({"node": node_id, "message": str(error)})
     container["errors"] = errors
-    new_state["tot"] = container
-    new_state["error"] = str(error)
-    return new_state
+    return {"tot": container, "error": str(error)}
 
 
 def analyze_task_type(goal: str) -> str:
@@ -998,29 +904,28 @@ def generate_generic_node_template(
         "        content = getattr(response, \"content\", response)",
         "        result_text = content if isinstance(content, str) else str(content)",
         "",
-        "        updated_state = dict(state)",
-        "        updated_state.pop(\"error\", None)",
-        "        result_payload: Dict[str, Any] = {",
+        "        result_snapshot: Dict[str, Any] = {",
         f"            \"node\": {label_literal},",
         "            \"role\": role,",
         "            \"task_type\": task_type,",
         "            \"content\": result_text,",
         "        }",
         "        if context_snapshot:",
-        "            result_payload[\"context\"] = context_snapshot",
-        f"        updated_state[{result_key_literal}] = result_payload",
+        "            result_snapshot[\"context\"] = context_snapshot",
         "        ai_message = AIMessage(",
         "            content=result_text,",
         "            additional_kwargs={\"node\": {label_literal}, \"node_role\": role},",
         "            response_metadata={\"task_type\": task_type},",
         "        )",
-        "        messages.append(ai_message)",
-        "        updated_state[\"messages\"] = messages",
-        "        return updated_state",
+        f"        scratch_update = {{{result_key_literal}: result_snapshot}}",
+        "        return {",
+        "            \"result\": result_text,",
+        "            \"messages\": [ai_message],",
+        "            \"scratch\": scratch_update,",
+        "            \"error\": \"\",",
+        "        }",
         "    except Exception as exc:",
-        "        failed_state = dict(state)",
-        "        failed_state[\"error\"] = str(exc)",
-        "        return failed_state",
+        "        return {\"error\": str(exc)}",
     ]
 
     template_lines = [
@@ -1347,7 +1252,7 @@ def {sanitized}(state: AppState) -> AppState:
         response = llm.invoke([SystemMessage(system_prompt), HumanMessage(human_prompt)])
         content = getattr(response, "content", response)
         answer = content if isinstance(content, str) else str(content)
-        updated = update_tot_state(
+        base_updates = update_tot_state(
             state,
             {{
                 "final_answer": answer,
@@ -1355,10 +1260,16 @@ def {sanitized}(state: AppState) -> AppState:
                 "selected_thought": selected,
             }},
         )
-        messages = list(updated.get("messages") or state.get("messages") or [])
-        messages.append({{"role": "assistant", "content": answer}})
-        updated["messages"] = messages
-        return updated
+        message = {{"role": "assistant", "content": answer}}
+        combined: Dict[str, Any] = dict(base_updates)
+        combined.update(
+            {
+                "messages": [message],
+                "final_output": answer,
+                "result": answer,
+            }
+        )
+        return combined
     except Exception as exc:
         return capture_tot_error(state, "{sanitized}", exc)
 """
@@ -1536,13 +1447,13 @@ def get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_self_correction_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     normalized_payload = dict(payload)
-    new_state = dict(state)
-    new_state["self_correction"] = normalized_payload
-    scaffold = dict(new_state.get("scaffold") or {})
+    scaffold = dict((state.get("scaffold") or {}))
     scaffold["self_correction"] = normalized_payload
-    new_state["scaffold"] = scaffold
-    new_state.pop("error", None)
-    return new_state
+    return {
+        "self_correction": normalized_payload,
+        "scaffold": scaffold,
+        "error": "",
+    }
 
 
 def ensure_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2691,14 +2602,9 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "",
             "",
             "def _fallback_node(state: Dict[str, Any]) -> Dict[str, Any]:",
-            "    updated = dict(state)",
-            "    scaffold = dict(updated.get('scaffold') or {})",
+            "    scaffold = dict((state.get('scaffold') or {}))",
             "    scaffold.setdefault('ok', True)",
-            "    updated['scaffold'] = scaffold",
-            "    report = dict(updated.get('report') or {})",
-            "    report.setdefault('status', 'skipped')",
-            "    updated['report'] = report",
-            "    return updated",
+            "    return {'scaffold': scaffold}",
             "",
             "",
             "def create_dynamic_graph(",
@@ -2712,12 +2618,10 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    for node_id, node_callable in node_sequence:",
             "        graph.add_node(node_id, node_callable)",
             "    normalized_edges = pattern.get('edges') or []",
-            "    edges: List[Tuple[str, str]] = []",
+            "    raw_edges: List[Tuple[str, str]] = []",
             "    if isinstance(normalized_edges, list):",
             "        for entry in normalized_edges:",
-            "            if isinstance(entry, tuple) and len(entry) == 2:",
-            "                source, target = entry",
-            "            elif isinstance(entry, list) and len(entry) == 2:",
+            "            if isinstance(entry, (tuple, list)) and len(entry) == 2:",
             "                source, target = entry",
             "            else:",
             "                try:",
@@ -2727,52 +2631,61 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "            source_name = str(source).strip()",
             "            target_name = str(target).strip()",
             "            if source_name and target_name:",
-            "                edges.append((source_name, target_name))",
-            "    if not edges:",
-            "        if not ordered_ids:",
-            "            graph.add_node('fallback', _fallback_node)",
-            "            graph.add_edge(START, 'fallback')",
-            "            graph.add_edge('fallback', END)",
-            "        else:",
-            "            previous: str | None = None",
-            "            for node_id in ordered_ids:",
-            "                if previous is None:",
-            "                    graph.add_edge(START, node_id)",
-            "                else:",
-            "                    graph.add_edge(previous, node_id)",
-            "                previous = node_id",
-            "            if previous is None:",
-            "                graph.add_edge(START, END)",
-            "            else:",
-            "                graph.add_edge(previous, END)",
+            "                raw_edges.append((source_name, target_name))",
+            "    start_hint: str | None = None",
+            "    sequential_edges: List[Tuple[str, str]] = []",
+            "    for source_name, target_name in raw_edges:",
+            "        source_upper = source_name.upper()",
+            "        target_upper = target_name.upper()",
+            "        if source_upper == 'START':",
+            "            if start_hint is None and target_name in ordered_ids:",
+            "                start_hint = target_name",
+            "            continue",
+            "        if target_upper == 'END':",
+            "            continue",
+            "        if source_name in ordered_ids and target_name in ordered_ids:",
+            "            sequential_edges.append((source_name, target_name))",
+            "    def _build_chain(order: List[str], connections: List[Tuple[str, str]], start_node: str | None) -> List[str]:",
+            "        next_map: Dict[str, str] = {}",
+            "        indegree: Dict[str, int] = {node: 0 for node in order}",
+            "        for source_name, target_name in connections:",
+            "            if source_name not in indegree or target_name not in indegree:",
+            "                continue",
+            "            if source_name in next_map:",
+            "                continue",
+            "            next_map[source_name] = target_name",
+            "            indegree[target_name] += 1",
+            "        chain: List[str] = []",
+            "        visited: set[str] = set()",
+            "        def _append_path(node: str) -> None:",
+            "            while node and node not in visited:",
+            "                chain.append(node)",
+            "                visited.add(node)",
+            "                node = next_map.get(node)",
+            "        if start_node and start_node in indegree:",
+            "            _append_path(start_node)",
+            "        for node in order:",
+            "            if indegree.get(node, 0) == 0 and node not in visited:",
+            "                _append_path(node)",
+            "        for node in order:",
+            "            if node not in visited:",
+            "                _append_path(node)",
+            "        return chain",
+            "    chain = _build_chain(ordered_ids, sequential_edges, start_hint)",
+            "    if not chain and ordered_ids:",
+            "        chain = list(ordered_ids)",
+            "    if not chain:",
+            "        graph.add_node('fallback', _fallback_node)",
+            "        graph.add_edge(START, 'fallback')",
+            "        graph.add_edge('fallback', END)",
             "    else:",
-            "        start_connected = False",
-            "        outgoing: set[str] = set()",
-            "        for source_name, target_name in edges:",
-            "            source_upper = source_name.upper()",
-            "            target_upper = target_name.upper()",
-            "            if source_upper == 'END':",
-            "                continue",
-            "            if source_upper == 'START':",
-            "                if target_name in ordered_ids:",
-            "                    graph.add_edge(START, target_name)",
-            "                    start_connected = True",
-            "                continue",
-            "            if source_name not in ordered_ids:",
-            "                continue",
-            "            if target_upper == 'END':",
-            "                graph.add_edge(source_name, END)",
-            "                outgoing.add(source_name)",
-            "                continue",
-            "            if target_name not in ordered_ids:",
-            "                continue",
-            "            graph.add_edge(source_name, target_name)",
-            "            outgoing.add(source_name)",
-            "        if not start_connected and ordered_ids:",
-            "            graph.add_edge(START, ordered_ids[0])",
-            "        for node_id in ordered_ids:",
-            "            if node_id not in outgoing:",
-            "                graph.add_edge(node_id, END)",
+            "        first = chain[0]",
+            "        graph.add_edge(START, first)",
+            "        previous = first",
+            "        for node_id in chain[1:]:",
+            "            graph.add_edge(previous, node_id)",
+            "            previous = node_id",
+            "        graph.add_edge(previous, END)",
             "    if running_on_langgraph_api():",
             "        logger.info('LangGraph API runtime detected; compiling without a checkpointer.')",
             "        return graph.compile(checkpointer=None)",
@@ -3262,16 +3175,14 @@ def plan_node(state: Dict[str, Any]) -> Dict[str, Any]:
             ],
         ).model_dump(by_alias=True)
 
-        messages = list(state.get("messages") or [])
-        messages.append(AIMessage(content=f"Generated plan for goal: {goal}"))
         current_step = {"more_steps": True, "steps_done": False}
-        return {"plan": plan, "messages": messages, "current_step": current_step}
-    except Exception as exc:
         return {
-            "error": str(exc),
-            "messages": list(state.get("messages") or []),
-            "current_step": {"more_steps": False, "steps_done": False},
+            "plan": plan,
+            "messages": [AIMessage(content=f"Generated plan for goal: {goal}")],
+            "scratch": {"workflow_current_step": current_step},
         }
+    except Exception as exc:
+        return {"error": str(exc)}
 """, encoding="utf-8")
 
     # tests

@@ -11,46 +11,20 @@ logger = logging.getLogger(__name__)
 
 
 _BASE_FIELDS: List[tuple[str, str]] = [
-    ("architecture", "Dict[str, Any]"),
-    ("artifacts", "Dict[str, Any]"),
-    ("build_attempts", "int"),
-    ("code_fixes", "Dict[str, Any]"),
-    ("code_validation", "Dict[str, Any]"),
-    ("consecutive_failures", "int"),
-    ("coordinator_decision", "str"),
-    ("current_step", "Dict[str, bool]"),
-    ("debug", "Dict[str, Any]"),
-    ("error", "str"),
-    ("evaluations", "List[Dict[str, Any]]"),
-    ("fix_attempts", "int"),
-    ("fix_strategy_used", "str | None"),
-    ("flags", "Dict[str, bool]"),
-    ("generated_files", "Dict[str, str]"),
+    ("messages", "Annotated[List[AnyMessage], add_messages]"),
     ("goal", "str"),
-    ("implemented_nodes", "List[Dict[str, Any]]"),
     ("input_text", "str"),
-    ("last_implemented_node", "str | None"),
-    ("last_user_input", "str"),
-    ("messages", "List[ChatMessage]"),
-    ("metrics", "Dict[str, Any]"),
-    ("next_action", "str"),
-    ("passed", "bool"),
     ("plan", "Dict[str, Any]"),
-    ("replan", "bool"),
-    ("repair_start_time", "float"),
-    ("report", "Dict[str, Any]"),
-    ("requirements", "Dict[str, Any]"),
-    ("review", "Dict[str, Any]"),
-    ("sandbox", "Dict[str, Any]"),
-    ("scaffold", "Dict[str, Any]"),
-    ("selected_thought", "Dict[str, Any]"),
-    ("syntax_validation", "Dict[str, Any]"),
-    ("tests", "Dict[str, Any]"),
-    ("thoughts", "List[str]"),
-    ("tot", "Dict[str, Any]"),
-    ("validation_errors", "List[str]"),
+    ("architecture", "Dict[str, Any]"),
+    ("result", "str"),
+    ("final_output", "str"),
+    ("error", "str"),
+    ("errors", "Annotated[List[str], operator.add]"),
+    ("scratch", "Annotated[Dict[str, Any], operator.or_]"),
+    ("scaffold", "Annotated[Dict[str, Any], operator.or_]"),
+    ("self_correction", "Annotated[Dict[str, Any], operator.or_]"),
+    ("tot", "Annotated[Dict[str, Any], operator.or_]"),
 ]
-
 
 def _infer_collection_type(key: str, value: Any | None = None) -> str:
     """Infer a reasonable type hint for an application state field."""
@@ -150,18 +124,44 @@ def _parse_schema_fields(schema: str) -> Dict[str, str]:
 def _append_fields_to_schema(
     schema: str, new_fields: List[tuple[str, str]]
 ) -> str:
+    """Append ``new_fields`` to the ``AppState`` definition within ``schema``."""
+
     if not new_fields:
         return schema
 
-    marker = "\n\ndef update_state_with_circuit_breaker"
-    additions = "".join(f"    {name}: {annotation}\n" for name, annotation in new_fields)
+    lines = schema.splitlines()
+    header = "class AppState(TypedDict, total=False):"
 
-    if marker in schema:
-        return schema.replace(marker, f"{additions}{marker}", 1)
+    # Fallback: if the header cannot be located, append the fields to the end of
+    # the document so the caller can inspect or repair the template manually.
+    if header not in lines:
+        additions = "\n".join(
+            f"    {name}: {annotation}" for name, annotation in new_fields
+        )
+        if schema and not schema.endswith("\n"):
+            schema += "\n"
+        return schema + additions + "\n"
 
-    if not schema.endswith("\n"):
-        schema += "\n"
-    return schema + additions
+    class_index = lines.index(header)
+
+    # Identify the first position after the existing field declarations to
+    # insert the new field definitions.
+    insert_at = class_index + 1
+    for idx in range(class_index + 1, len(lines)):
+        line = lines[idx]
+        if line.startswith("    ") or not line.strip():
+            insert_at = idx + 1
+            continue
+        break
+
+    insertion_lines = [f"    {name}: {annotation}" for name, annotation in new_fields]
+    updated_lines = lines[:insert_at] + insertion_lines + lines[insert_at:]
+
+    result = "\n".join(updated_lines)
+    if not result.endswith("\n"):
+        result += "\n"
+    return result
+
 
 
 def generate_state_schema(state: Dict[str, Any]) -> Dict[str, Any]:

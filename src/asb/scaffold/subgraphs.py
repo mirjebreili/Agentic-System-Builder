@@ -17,6 +17,7 @@ from .build_nodes import (
 )
 from .repair_nodes import fix_empty_nodes, fix_graph_compilation, fix_import_errors
 from .validate_nodes import (
+    validate_concurrency_safety,
     validate_imports,
     validate_langgraph_compile,
     validate_non_empty_generation,
@@ -98,12 +99,14 @@ def create_validate_subgraph() -> Any:
     graph.add_node("validate_non_empty_generation", validate_non_empty_generation)
     graph.add_node("validate_syntax", validate_syntax)
     graph.add_node("validate_imports", validate_imports)
+    graph.add_node("validate_concurrency_safety", validate_concurrency_safety)
     graph.add_node("validate_langgraph_compile", validate_langgraph_compile)
 
     graph.add_edge(START, "validate_non_empty_generation")
     graph.add_edge("validate_non_empty_generation", "validate_syntax")
     graph.add_edge("validate_syntax", "validate_imports")
-    graph.add_edge("validate_imports", "validate_langgraph_compile")
+    graph.add_edge("validate_imports", "validate_concurrency_safety")
+    graph.add_edge("validate_concurrency_safety", "validate_langgraph_compile")
     graph.add_edge("validate_langgraph_compile", END)
 
     return graph.compile()

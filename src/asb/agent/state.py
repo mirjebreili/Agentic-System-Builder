@@ -1,66 +1,47 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Literal, TypedDict
 
-from asb.scaffold import ScaffoldPhase
+from typing import Annotated, Any, Dict, List, TypedDict
+import operator
 
-class ChatMessage(TypedDict, total=False):
-    role: Literal["human","user","assistant","system","tool"]
-    content: str
+from langchain_core.messages import AnyMessage
+from langgraph.graph import add_messages
 
-class SelfCorrectionState(TypedDict, total=False):
-    attempt: int
-    awaiting_validation: bool
-    history: List[Dict[str, Any]]
-    latest_candidate: str | None
-    max_attempts: int
-    needs_revision: bool
-    validation: Dict[str, Any]
 
 class AppState(TypedDict, total=False):
-    architecture: Dict[str, Any]
-    artifacts: Dict[str, Any]
-    build_attempts: int
-    code_fixes: Dict[str, Any]
-    code_validation: Dict[str, Any]
-    consecutive_failures: int
-    coordinator_decision: str
-    current_step: Dict[str, bool]
-    debug: Dict[str, Any]
-    error: str
-    evaluations: List[Dict[str, Any]]
-    fix_attempts: int
-    fix_strategy_used: str | None
-    flags: Dict[str, bool]
-    generated_files: Dict[str, str]
+    # Conversation/history
+    messages: Annotated[List[AnyMessage], add_messages]
+
+    # Core inputs
     goal: str
-    implemented_nodes: List[Dict[str, Any]]
     input_text: str
-    last_implemented_node: str | None
-    last_user_input: str
-    messages: List[ChatMessage]
-    metrics: Dict[str, Any]
-    next_action: str
-    passed: bool
+    
+    # Planning/architecture
     plan: Dict[str, Any]
-    replan: bool
-    repair_start_time: float
-    report: Dict[str, Any]
-    requirements: Dict[str, Any]
-    review: Dict[str, Any]
-    sandbox: Dict[str, Any]
-    scaffold: Dict[str, Any]
-    scaffold_phase: ScaffoldPhase
-    self_correction: SelfCorrectionState
-    selected_thought: Dict[str, Any]
-    syntax_validation: Dict[str, Any]
-    tests: Dict[str, Any]
-    thoughts: List[str]
-    tot: Dict[str, Any]
-    validation_errors: List[str]
+    architecture: Dict[str, Any]
+
+    # Execution outputs
+    result: str
+    final_output: str
+
+    # Diagnostics
+    error: str
+    errors: Annotated[List[str], operator.add]
+
+    # Flexible scratchpad for intermediate values
+    scratch: Annotated[Dict[str, Any], operator.or_]
+
+    # Build-time scaffolding diagnostics
+    scaffold: Annotated[Dict[str, Any], operator.or_]
+
+    # Adaptive improvement metadata
+    self_correction: Annotated[Dict[str, Any], operator.or_]
+
+    # Advanced reasoning containers
+    tot: Annotated[Dict[str, Any], operator.or_]
 
 
 def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Add circuit breaker logic to prevent infinite loops"""
+    """Add circuit breaker logic to prevent infinite loops."""
 
     if "fix_attempts" not in state:
         state["fix_attempts"] = 0
