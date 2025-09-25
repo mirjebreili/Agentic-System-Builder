@@ -13,6 +13,7 @@ from asb.scaffold.build_nodes import (
     write_node_modules,
     write_state_schema,
 )
+from asb.scaffold.validate_nodes import validate_state_schema_safety
 from asb.utils.fileops import atomic_write, ensure_dir
 
 
@@ -20,8 +21,8 @@ _BASE_STATE_FIELDS: List[tuple[str, str]] = [
     ("messages", "Annotated[List[AnyMessage], add_messages]"),
     ("goal", "str"),
     ("input_text", "str"),
-    ("plan", "Dict[str, Any]"),
-    ("architecture", "Dict[str, Any]"),
+    ("plan", "Annotated[Dict[str, Any], operator.or_]"),
+    ("architecture", "Annotated[Dict[str, Any], operator.or_]"),
     ("result", "str"),
     ("final_output", "str"),
     ("error", "str"),
@@ -92,35 +93,29 @@ def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> 
         "",
         "",
         "class AppState(TypedDict, total=False):",
-        "    # Conversation/history",
+        "    # Messages with proper aggregator",
         "    messages: Annotated[List[AnyMessage], add_messages]",
         "",
-        "    # Core inputs",
+        "    # Core inputs - these are usually set once",
         "    goal: str",
         "    input_text: str",
         "",
-        "    # Planning/architecture",
-        "    plan: Dict[str, Any]",
-        "    architecture: Dict[str, Any]",
+        "    # Architecture data - merge safely with operator.or_",
+        "    plan: Annotated[Dict[str, Any], operator.or_]",
+        "    architecture: Annotated[Dict[str, Any], operator.or_]",
         "",
-        "    # Execution outputs",
+        "    # Execution outputs - last writer wins",
         "    result: str",
         "    final_output: str",
         "",
-        "    # Diagnostics",
+        "    # Error handling - merge lists with operator.add",
         "    error: str",
         "    errors: Annotated[List[str], operator.add]",
         "",
-        "    # Flexible scratchpad for intermediate values",
+        "    # Flexible containers - merge with operator.or_",
         "    scratch: Annotated[Dict[str, Any], operator.or_]",
-        "",
-        "    # Build-time scaffolding diagnostics",
         "    scaffold: Annotated[Dict[str, Any], operator.or_]",
-        "",
-        "    # Adaptive improvement metadata",
         "    self_correction: Annotated[Dict[str, Any], operator.or_]",
-        "",
-        "    # Advanced reasoning containers",
         "    tot: Annotated[Dict[str, Any], operator.or_]",
     ]
 
@@ -3083,6 +3078,10 @@ def scaffold_project(state: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         write_state_schema(state)
+
+        schema_issues = validate_state_schema_safety(base)
+        if schema_issues:
+            scaffold_errors.extend(schema_issues)
 
         node_definitions, node_specs = write_node_modules(state)
         state["_scaffold_node_definitions"] = node_definitions
