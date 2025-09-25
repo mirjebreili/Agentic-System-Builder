@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 import sys
 import time
 from contextlib import suppress
@@ -387,6 +388,163 @@ def validate_imports(state: ScaffoldState) -> ScaffoldState:
     summary = "Node import validation passed." if success else "Node import validation detected issues."
     _finish_phase(state, phase, started, success=success, summary=summary, details=details, errors=errors)
     _record_validation_result(state, "imports", success, errors, details)
+    _update_build_report(state, node_name, success=success, errors=errors, details=details)
+    return state
+
+
+def _parse_app_state_fields(state_source: str) -> tuple[set[str], set[str]]:
+    appstate_fields: set[str] = set()
+    aggregator_fields: set[str] = set()
+    match = re.search(
+        r"class\s+AppState\(TypedDict,\s*total=False\):\n((?:    .+\n)+)",
+        state_source,
+    )
+    if not match:
+        return appstate_fields, aggregator_fields
+    body = match.group(1)
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        name, annotation = stripped.split(":", 1)
+        field_name = name.strip()
+        appstate_fields.add(field_name)
+        if "Annotated[" in annotation:
+            aggregator_fields.add(field_name)
+    return appstate_fields, aggregator_fields
+
+
+def _collect_return_keys(module_tree: ast.AST) -> set[str]:
+    keys: set[str] = set()
+    for node in ast.walk(module_tree):
+        if isinstance(node, ast.Return):
+            value = node.value
+            if isinstance(value, ast.Dict):
+                for key in value.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        keys.add(key.value)
+    return keys
+
+
+def validate_concurrency_safety(state: ScaffoldState) -> ScaffoldState:
+    """Validate that generated graphs update state keys safely."""
+
+    node_name = "validate_concurrency_safety"
+    phase, started = _start_phase(
+        state,
+        "validate_concurrency_safety",
+        "Ensure generated graph/state definitions are concurrency safe.",
+    )
+
+    errors: List[str] = []
+    details: Dict[str, Any] = {}
+
+    try:
+        project_path = _resolve_project_path(state)
+    except Exception as exc:
+        message = f"Unable to resolve scaffold project path: {exc}"
+        errors.append(message)
+        summary = "Concurrency safety validation could not start."
+        _finish_phase(state, phase, started, success=False, summary=summary, details=details, errors=errors)
+        _record_validation_result(state, "concurrency", False, errors, details)
+        _update_build_report(state, node_name, success=False, errors=errors, details=details)
+        return state
+
+    graph_path = project_path / "src" / "agent" / "graph.py"
+    state_path = project_path / "src" / "agent" / "state.py"
+
+    graph_contents = ""
+    if graph_path.exists():
+        try:
+            graph_contents = graph_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            errors.append(f"Unable to read graph.py: {exc}")
+    else:
+        errors.append("graph.py is missing; unable to validate concurrency safety.")
+
+    state_contents = ""
+    if state_path.exists():
+        try:
+            state_contents = state_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            errors.append(f"Unable to read state.py: {exc}")
+    else:
+        errors.append("state.py is missing; unable to validate concurrency safety.")
+
+    appstate_fields, aggregator_fields = _parse_app_state_fields(state_contents)
+    aggregator_fields_no_messages = {field for field in aggregator_fields if field != "messages"}
+
+    start_edge_targets: set[str] = set()
+    if graph_contents:
+        for match in re.findall(r"add_edge\(\s*START\s*,\s*(['\"])([^'\"]+)\\1", graph_contents):
+            target = match[1]
+            if target != "END":
+                start_edge_targets.add(target)
+        if "StateGraph(AppState" not in graph_contents:
+            errors.append("graph.py does not instantiate StateGraph(AppState).")
+
+    if len(start_edge_targets) > 1 and not aggregator_fields_no_messages:
+        errors.append(
+            "Invalid concurrent graph update risk: multiple START fan-out with no per-key aggregators. Either serialize the start edges or annotate the keys."
+        )
+
+    details.update(
+        {
+            "start_edge_targets": sorted(start_edge_targets),
+            "appstate_fields": sorted(appstate_fields),
+            "aggregator_fields": sorted(aggregator_fields),
+        }
+    )
+
+    node_modules = _collect_node_module_paths(project_path)
+    undeclared_keys: set[str] = set()
+    merge_offenders: List[str] = []
+
+    for name, path in node_modules.items():
+        if not path.exists():
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            errors.append(f"{name}: unable to read source for concurrency validation ({exc})")
+            continue
+        if re.search(r"\{\s*\*\*state", source):
+            merge_offenders.append(name)
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            continue
+        except Exception as exc:
+            errors.append(f"{name}: unable to parse module for concurrency validation ({exc})")
+            continue
+        undeclared_keys.update(
+            key for key in _collect_return_keys(tree) if key not in appstate_fields and key != "scratch"
+        )
+
+    if merge_offenders:
+        for offender in merge_offenders:
+            errors.append(f"{offender}: detected state merge pattern (`{{**state ...}}`).")
+
+    if undeclared_keys:
+        errors.append(
+            "Node modules return keys not declared in AppState: "
+            + ", ".join(sorted(undeclared_keys))
+        )
+        details["undeclared_keys"] = sorted(undeclared_keys)
+
+    if merge_offenders:
+        details["state_merge_modules"] = sorted(merge_offenders)
+
+    success = not errors
+    summary = (
+        "Concurrency safety validation passed."
+        if success
+        else "Concurrency safety validation detected issues."
+    )
+    _finish_phase(state, phase, started, success=success, summary=summary, details=details, errors=errors)
+    _record_validation_result(state, "concurrency", success, errors, details)
     _update_build_report(state, node_name, success=success, errors=errors, details=details)
     return state
 
