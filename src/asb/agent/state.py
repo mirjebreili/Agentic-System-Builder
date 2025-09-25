@@ -16,8 +16,8 @@ class AppState(TypedDict, total=False):
     input_text: str
     
     # Planning/architecture
-    plan: Dict[str, Any]
-    architecture: Dict[str, Any]
+    plan: Annotated[Dict[str, Any], operator.or_]
+    architecture: Annotated[Dict[str, Any], operator.or_]
 
     # Execution outputs
     result: str
@@ -32,6 +32,9 @@ class AppState(TypedDict, total=False):
 
     # Build-time scaffolding diagnostics
     scaffold: Annotated[Dict[str, Any], operator.or_]
+
+    # Sandbox validation results
+    sandbox: Annotated[Dict[str, Any], operator.or_]
 
     # Adaptive improvement metadata
     self_correction: Annotated[Dict[str, Any], operator.or_]

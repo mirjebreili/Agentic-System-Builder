@@ -259,7 +259,7 @@ def _build_plan_node_specs(architecture_plan: Dict[str, Any]) -> List[Tuple[str,
     specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
     if not isinstance(architecture_plan, dict):
         return specs
-    nodes = architecture_plan.get("nodes") or []
+    nodes = architecture_plan.get("nodes") or architecture_plan.get("graph_structure") or []
     seen: set[str] = set()
     for entry in nodes:
         if not isinstance(entry, dict):
@@ -358,12 +358,20 @@ def write_node_modules(
 
         architecture_plan = state.get("_scaffold_architecture_plan") or {}
         user_goal = state.get("_scaffold_user_goal") or ""
+        requires_self_correction = False
+        if isinstance(architecture_plan, dict):
+            requires_self_correction = scaffold_module._architecture_requires_self_correction(
+                architecture_plan
+            )
 
         print(f"🔍 BUILD DEBUG - Architecture plan: {architecture_plan}")
         print(f"🔍 BUILD DEBUG - User goal: {user_goal}")
 
         node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
         generated_nodes: Dict[str, str] = {}
+        normalized_generated = _get_normalized_generated_files(state)
+
+        module_lookup: Dict[str, str] = {}
 
         if isinstance(architecture_plan, dict):
             node_specs = _build_plan_node_specs(architecture_plan)
@@ -371,26 +379,49 @@ def write_node_modules(
                 print(
                     f"🔍 BUILD DEBUG - Found {len(node_specs)} nodes to generate"
                 )
-                goal_lower = user_goal.lower()
-                if "summariz" in goal_lower or "chat" in goal_lower:
-                    for node_id, module_name, _hints, metadata in node_specs:
-                        template = generate_node_template(node_id, module_name, user_goal, metadata)
-                        generated_nodes[f"{module_name}.py"] = template
-                else:
-                    generated_nodes = scaffold_module.generate_nodes_from_architecture(
-                        architecture_plan, user_goal
-                    ) or {}
-                if generated_nodes:
-                    _write_generated_nodes(agent_dir, generated_nodes, node_specs, state)
+                module_lookup = {module: node_id for node_id, module, _, _ in node_specs}
+                if not requires_self_correction:
+                    goal_lower = user_goal.lower()
+                    if "summariz" in goal_lower or "chat" in goal_lower:
+                        for node_id, module_name, _hints, metadata in node_specs:
+                            template = generate_node_template(
+                                node_id, module_name, user_goal, metadata
+                            )
+                            generated_nodes[f"{module_name}.py"] = template
+                    else:
+                        generated_nodes = scaffold_module.generate_nodes_from_architecture(
+                            architecture_plan, user_goal
+                        ) or {}
+                    if generated_nodes:
+                        for filename, source in generated_nodes.items():
+                            module_name = Path(filename).stem
+                            node_id = module_lookup.get(module_name, module_name)
+                            normalized_tot = scaffold_module._normalize_tot_node_id(node_id)
+                            if normalized_tot and normalized_tot in scaffold_module._TOT_RENDERERS:
+                                continue
+                            candidate = f"src/agent/{filename}"
+                            normalized_key = scaffold_module._normalize_generated_key(
+                                candidate
+                            )
+                            if normalized_key not in normalized_generated:
+                                normalized_generated[normalized_key] = source
 
-        if not generated_nodes:
+        if not node_specs:
             print(
                 "⚠️  No architecture plan found - using fallback generation"
             )
             architecture_fallback = state.get("architecture") or {}
             node_specs = scaffold_module._collect_architecture_nodes(architecture_fallback)
-            if node_specs:
-                _write_existing_node_modules(base, node_specs, state, user_goal)
+
+        if node_specs:
+            scaffold_module._write_node_modules(
+                base,
+                node_specs,
+                normalized_generated,
+                state.get("_scaffold_missing_files", []),
+                user_goal,
+                state.get("_scaffold_errors", []),
+            )
 
         node_definitions = _build_node_definitions(agent_dir, node_specs)
     except Exception as exc:
@@ -448,6 +479,7 @@ def generate_summarizer_node_template(
         "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
         "from ..llm import client",
         "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from asb.utils.message_utils import extract_last_message_content",
         "from .state import AppState",
         "",
         f"def {func_name}(state: AppState) -> AppState:",
@@ -472,9 +504,8 @@ def generate_summarizer_node_template(
             "",
             "",
             '    messages = state.get("messages", [])',
-            '    if messages and isinstance(messages[-1], dict):',
-            '        user_input = messages[-1].get("content", "")',
-            '    else:',
+            '    user_input = extract_last_message_content(messages, "")',
+            '    if not user_input:',
             '        user_input = state.get("input_text", "")',
             '    scratchpad = dict(state.get("scratch") or {})',
             "",
@@ -556,6 +587,7 @@ def generate_chat_node_template(
         "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
         "from ..llm import client",
         "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from asb.utils.message_utils import extract_last_message_content",
         "from .state import AppState",
         "",
         f"def {func_name}(state: AppState) -> AppState:",
@@ -579,9 +611,8 @@ def generate_chat_node_template(
             "        prompt_prefix = (prompt_prefix + response_guidelines + \"\\n\\n\") if prompt_prefix else response_guidelines + \"\\n\\n\"",
             "",
             '    messages = state.get("messages", [])',
-            '    if messages and isinstance(messages[-1], dict):',
-            '        user_input = messages[-1].get("content", "")',
-            '    else:',
+            '    user_input = extract_last_message_content(messages, "")',
+            '    if not user_input:',
             '        user_input = state.get("input_text", "")',
             "",
             '    response = llm.invoke([',
@@ -626,6 +657,7 @@ def generate_generic_node_template(
         "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
         "from ..llm import client",
         "from ..prompts_util import ROLE_RESPONSE_GUIDELINES, ROLE_SYSTEM_PROMPTS",
+        "from asb.utils.message_utils import extract_last_message_content",
         "from .state import AppState",
         "",
         f"def {func_name}(state: AppState) -> AppState:",
@@ -650,9 +682,8 @@ def generate_generic_node_template(
             f"    adaptive_prompt = \"Adaptive implementation for the {purpose_for_prompt} step.\"",
             "",
             '    messages = state.get("messages", [])',
-            '    if messages and isinstance(messages[-1], dict):',
-            '        user_input = messages[-1].get("content", "")',
-            '    else:',
+            '    user_input = extract_last_message_content(messages, "")',
+            '    if not user_input:',
             '        user_input = state.get("input_text", "")',
             "",
             '    response = llm.invoke([',

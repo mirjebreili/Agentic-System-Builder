@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 from asb.agent.prompts_util import find_prompts_dir
 from asb.llm.client import get_chat_model
+from asb.utils.message_utils import extract_last_message_content
 
 class PlanNode(BaseModel):
     id: str
@@ -45,7 +46,8 @@ def _extract_json(text: str) -> str:
 def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     """ToT: generate K=3 plans, judge, pick best; attach confidence."""
     llm = get_chat_model()
-    user_goal = (state.get("messages") or [{}])[-1].get("content", "Plan a tiny workflow.")
+    messages = state.get("messages") or []
+    user_goal = extract_last_message_content(messages, "Plan a tiny workflow.")
     K = 3
 
     sys = SystemMessage(SYSTEM_PROMPT + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")

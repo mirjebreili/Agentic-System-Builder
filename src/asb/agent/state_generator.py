@@ -14,8 +14,8 @@ _BASE_FIELDS: List[tuple[str, str]] = [
     ("messages", "Annotated[List[AnyMessage], add_messages]"),
     ("goal", "str"),
     ("input_text", "str"),
-    ("plan", "Dict[str, Any]"),
-    ("architecture", "Dict[str, Any]"),
+    ("plan", "Annotated[Dict[str, Any], operator.or_]"),
+    ("architecture", "Annotated[Dict[str, Any], operator.or_]"),
     ("result", "str"),
     ("final_output", "str"),
     ("error", "str"),
@@ -23,6 +23,7 @@ _BASE_FIELDS: List[tuple[str, str]] = [
     ("scratch", "Annotated[Dict[str, Any], operator.or_]"),
     ("scaffold", "Annotated[Dict[str, Any], operator.or_]"),
     ("self_correction", "Annotated[Dict[str, Any], operator.or_]"),
+    ("sandbox", "Annotated[Dict[str, Any], operator.or_]"),
     ("tot", "Annotated[Dict[str, Any], operator.or_]"),
 ]
 

@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("langchain", reason="LangChain is required for E2E automation tests")
+
 from asb.testing.e2e_automation import E2ETestRunner, TEST_SCENARIOS
 
 
