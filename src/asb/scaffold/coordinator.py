@@ -129,10 +129,10 @@ def scaffold_coordinator(state: Mapping[str, Any] | None) -> dict[str, Any]:
         if base_path:
             working_state["_scaffold_base_path"] = base_path
 
-    print(f"\ud83d\udd0d SCAFFOLD DEBUG - Architecture plan: {bool(architecture_plan)}")
-    print(f"\ud83d\udd0d SCAFFOLD DEBUG - User goal: {user_goal}")
+    print(f"🔍 SCAFFOLD DEBUG - Architecture plan: {bool(architecture_plan)}")
+    print(f"🔍 SCAFFOLD DEBUG - User goal: {user_goal}")
     print(
-        f"\ud83d\udd0d SCAFFOLD DEBUG - Plan nodes: {architecture_plan.get('nodes', []) if isinstance(architecture_plan, dict) else []}"
+        f"🔍 SCAFFOLD DEBUG - Plan nodes: {architecture_plan.get('nodes', []) if isinstance(architecture_plan, dict) else []}"
     )
 
     build_phase, started = _start_phase(
