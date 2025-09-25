@@ -9,6 +9,7 @@ from typing import Any, Dict
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from asb.llm.client import get_chat_model
+from asb.utils.message_utils import extract_last_message_content, safe_message_access
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +95,19 @@ def analyze_requirements(state: Dict[str, Any]) -> Dict[str, Any]:
     messages = list(state.get("messages") or [])
     latest_user_prompt = ""
     for message in reversed(messages):
-        role = (message or {}).get("role", "")
-        if role in {"user", "human"}:
-            latest_user_prompt = (message or {}).get("content", "")
+        role = safe_message_access(message, "role", "")
+        if not role:
+            role = str(safe_message_access(message, "type", "")).lower()
+        else:
+            role = str(role).lower()
+        content = safe_message_access(message, "content", "")
+        if not content and isinstance(message, str):
+            content = message
+        if role in {"user", "human"} and content:
+            latest_user_prompt = str(content)
             break
     if not latest_user_prompt and messages:
-        latest_user_prompt = (messages[-1] or {}).get("content", "")
+        latest_user_prompt = extract_last_message_content(messages, "")
 
     logger.info(
         "Analyzing requirements for prompt snippet: %s",

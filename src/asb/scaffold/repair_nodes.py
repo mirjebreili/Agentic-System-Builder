@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, MutableMapping, Tuple
 from asb.agent import scaffold as scaffold_module
 from asb.agent.scaffold import generate_generic_node_template
 from asb.utils.fileops import atomic_write, ensure_dir
+from asb.utils.message_utils import extract_last_message_content
 
 from .build_nodes import _build_node_definitions, _build_plan_node_specs
 
@@ -109,14 +110,9 @@ def _infer_user_goal(state: Mapping[str, Any]) -> str:
         candidates.append(state.get("goal"))
         messages = state.get("messages")
         if isinstance(messages, Sequence):
-            for message in reversed(messages):
-                if isinstance(message, Mapping):
-                    content = message.get("content")
-                else:
-                    content = getattr(message, "content", None)
-                if content:
-                    candidates.append(content)
-                    break
+            content = extract_last_message_content(list(messages), "")
+            if content:
+                candidates.append(content)
     for candidate in candidates:
         if candidate:
             return str(candidate)

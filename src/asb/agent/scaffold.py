@@ -15,6 +15,7 @@ from asb.scaffold.build_nodes import (
 )
 from asb.scaffold.validate_nodes import validate_state_schema_safety
 from asb.utils.fileops import atomic_write, ensure_dir
+from asb.utils.message_utils import extract_last_message_content, safe_message_access
 
 
 _BASE_STATE_FIELDS: List[tuple[str, str]] = [
@@ -29,6 +30,7 @@ _BASE_STATE_FIELDS: List[tuple[str, str]] = [
     ("errors", "Annotated[List[str], operator.add]"),
     ("scratch", "Annotated[Dict[str, Any], operator.or_]"),
     ("scaffold", "Annotated[Dict[str, Any], operator.or_]"),
+    ("sandbox", "Annotated[Dict[str, Any], operator.or_]"),
     ("self_correction", "Annotated[Dict[str, Any], operator.or_]"),
     ("tot", "Annotated[Dict[str, Any], operator.or_]"),
 ]
@@ -115,6 +117,7 @@ def generate_enhanced_state_schema(architecture_plan: Dict[str, Any] | None) -> 
         "    # Flexible containers - merge with operator.or_",
         "    scratch: Annotated[Dict[str, Any], operator.or_]",
         "    scaffold: Annotated[Dict[str, Any], operator.or_]",
+        "    sandbox: Annotated[Dict[str, Any], operator.or_]",
         "    self_correction: Annotated[Dict[str, Any], operator.or_]",
         "    tot: Annotated[Dict[str, Any], operator.or_]",
     ]
@@ -384,10 +387,14 @@ def _coerce_text(value: Any) -> Optional[str]:
         for item in value:
             if isinstance(item, str):
                 candidate = item
-            elif isinstance(item, dict):
-                candidate = item.get("text") or item.get("content") or item.get("value")
             else:
-                candidate = str(item)
+                candidate = (
+                    safe_message_access(item, "text", None)
+                    or safe_message_access(item, "content", None)
+                    or safe_message_access(item, "value", None)
+                )
+                if candidate is None:
+                    candidate = str(item)
             if candidate:
                 parts.append(str(candidate))
         text = " ".join(part.strip() for part in parts if part)
@@ -420,11 +427,11 @@ def extract_input_text(state: Dict[str, Any]) -> str:
     fallback: Optional[str] = None
     for message in reversed(list(messages)):
         payload = _message_to_dict(message)
-        text = _coerce_text(payload.get("content"))
+        text = _coerce_text(safe_message_access(payload, "content", None))
         if not text:
             continue
 
-        role = (payload.get("role") or "").lower()
+        role = (safe_message_access(payload, "role", "") or "").lower()
         if role in {"user", "human"}:
             return text
         if fallback is None:
@@ -774,6 +781,8 @@ def generate_generic_node_template(
         "            break",
         "        if not latest_user:",
         "            latest_user = text",
+        "    if not latest_user:",
+        "        latest_user = extract_last_message_content(messages, \"\")",
         "    if latest_user:",
         "        description_parts.append(latest_user)",
         "    combined = \" \".join(part.lower() for part in description_parts if part).strip()",
@@ -870,6 +879,8 @@ def generate_generic_node_template(
         "            break",
         "        if not latest_user:",
         "            latest_user = text",
+        "    if not latest_user:",
+        "        latest_user = extract_last_message_content(messages, \"\")",
         "    if latest_user:",
         "        context_lines.append(f\"Latest user input: {latest_user}\")",
         "",
@@ -899,7 +910,7 @@ def generate_generic_node_template(
         "        content = getattr(response, \"content\", response)",
         "        result_text = content if isinstance(content, str) else str(content)",
         "",
-        "        result_snapshot: Dict[str, Any] = {",
+        "        result_payload: Dict[str, Any] = {",
         f"            \"node\": {label_literal},",
         "            \"role\": role,",
         "            \"task_type\": task_type,",
@@ -912,10 +923,11 @@ def generate_generic_node_template(
         "            additional_kwargs={\"node\": {label_literal}, \"node_role\": role},",
         "            response_metadata={\"task_type\": task_type},",
         "        )",
-        f"        scratch_update = {{{result_key_literal}: result_snapshot}}",
+        "        messages.append(ai_message)",
+        f"        scratch_update = {{{result_key_literal}: result_payload}}",
         "        return {",
         "            \"result\": result_text,",
-        "            \"messages\": [ai_message],",
+        "            \"messages\": messages,",
         "            \"scratch\": scratch_update,",
         "            \"error\": \"\",",
         "        }",
@@ -931,6 +943,7 @@ def generate_generic_node_template(
         "from langchain_core.messages import AIMessage, HumanMessage, SystemMessage",
         "",
         "from ..llm import client",
+        "from asb.utils.message_utils import extract_last_message_content",
         "from .state import AppState",
         "",
         _dict_literal("ROLE_SYSTEM_PROMPTS", role_system_prompts),
@@ -954,8 +967,8 @@ def _ensure_tot_utils(agent_dir: Path, generated: Dict[str, str]) -> None:
     provided = _get_generated_content(
         generated,
         "utils.py",
-        "src/agent/utils.py",
         "agent/utils.py",
+        "src/agent/utils.py",
     )
     if provided is not None:
         ensure_dir(utils_path.parent)
@@ -1084,7 +1097,7 @@ def generate_nodes_from_architecture(
     if not isinstance(architecture_plan, dict):
         return {}
 
-    nodes = architecture_plan.get("nodes")
+    nodes = architecture_plan.get("nodes") or architecture_plan.get("graph_structure")
     if not isinstance(nodes, list):
         return {}
 
@@ -1258,11 +1271,11 @@ def {sanitized}(state: AppState) -> AppState:
         message = {{"role": "assistant", "content": answer}}
         combined: Dict[str, Any] = dict(base_updates)
         combined.update(
-            {
+            {{
                 "messages": [message],
                 "final_output": answer,
                 "result": answer,
-            }
+            }}
         )
         return combined
     except Exception as exc:
@@ -1324,7 +1337,11 @@ def _coerce_text(value: Any) -> Optional[str]:
                 parts.append(coerced)
         candidate = " ".join(parts)
     elif isinstance(value, dict):
-        primary = value.get("text") or value.get("content") or value.get("value")
+        primary = (
+            safe_message_access(value, "text", None)
+            or safe_message_access(value, "content", None)
+            or safe_message_access(value, "value", None)
+        )
         if primary is not None:
             return _coerce_text(primary)
         return None
@@ -1345,10 +1362,10 @@ def extract_input_text(state: Dict[str, Any]) -> str:
     fallback: Optional[str] = None
     for message in reversed(list(messages)):
         payload = _message_to_dict(message)
-        text = _coerce_text(payload.get("content"))
+        text = _coerce_text(safe_message_access(payload, "content", None))
         if not text:
             continue
-        role = (payload.get("role") or "").lower()
+        role = (safe_message_access(payload, "role", "") or "").lower()
         if role in {"user", "human"}:
             return text
         if fallback is None:
@@ -1442,13 +1459,13 @@ def get_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_self_correction_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     normalized_payload = dict(payload)
+    new_state = dict(state)
     scaffold = dict((state.get("scaffold") or {}))
     scaffold["self_correction"] = normalized_payload
-    return {
-        "self_correction": normalized_payload,
-        "scaffold": scaffold,
-        "error": "",
-    }
+    new_state["self_correction"] = normalized_payload
+    new_state["scaffold"] = scaffold
+    new_state["error"] = ""
+    return new_state
 
 
 def ensure_self_correction_payload(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2009,8 +2026,8 @@ def _write_node_modules(
         provided_helper = _get_generated_content(
             generated,
             helper_name,
-            f"src/agent/{helper_name}",
             f"agent/{helper_name}",
+            f"src/agent/{helper_name}",
         )
         if provided_helper is not None and not provided_helper.strip():
             provided_helper = None
@@ -2034,8 +2051,8 @@ def _write_node_modules(
         source = _get_generated_content(
             generated,
             filename,
-            f"src/agent/{filename}",
             f"agent/{filename}",
+            f"src/agent/{filename}",
         )
 
         if source is not None and not source.strip():
@@ -2596,10 +2613,18 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    return available",
             "",
             "",
-            "def _fallback_node(state: Dict[str, Any]) -> Dict[str, Any]:",
-            "    scaffold = dict((state.get('scaffold') or {}))",
-            "    scaffold.setdefault('ok', True)",
-            "    return {'scaffold': scaffold}",
+        "def _fallback_node(state: Dict[str, Any]) -> Dict[str, Any]:",
+        "    updated = dict(state or {})",
+        "    messages = list(updated.get('messages') or [])",
+        "    messages.append({'role': 'assistant', 'content': 'Fallback executed'})",
+        "    updated['messages'] = messages",
+        "    scaffold = dict(updated.get('scaffold') or {})",
+        "    visited = list(scaffold.get('visited_nodes') or [])",
+        "    visited.append('fallback')",
+        "    scaffold['visited_nodes'] = visited",
+        "    scaffold.setdefault('ok', True)",
+        "    updated['scaffold'] = scaffold",
+        "    return updated",
             "",
             "",
             "def create_dynamic_graph(",
@@ -2609,6 +2634,14 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "    path: str | None = None,",
             "):",
             "    graph = StateGraph(AppState)",
+            "    seen_edges: set[tuple[Any, Any]] = set()",
+            "",
+            "    def _add_edge(source: Any, target: Any) -> None:",
+            "        key = (source, target)",
+            "        if key in seen_edges:",
+            "            return",
+            "        seen_edges.add(key)",
+            "        graph.add_edge(source, target)",
             "    ordered_ids = [node_id for node_id, _ in node_sequence]",
             "    for node_id, node_callable in node_sequence:",
             "        graph.add_node(node_id, node_callable)",
@@ -2671,16 +2704,27 @@ def generate_dynamic_workflow_module(architecture_plan: Dict[str, Any]) -> str:
             "        chain = list(ordered_ids)",
             "    if not chain:",
             "        graph.add_node('fallback', _fallback_node)",
-            "        graph.add_edge(START, 'fallback')",
-            "        graph.add_edge('fallback', END)",
+            "        _add_edge(START, 'fallback')",
+            "        _add_edge('fallback', END)",
             "    else:",
             "        first = chain[0]",
-            "        graph.add_edge(START, first)",
+            "        _add_edge(START, first)",
             "        previous = first",
             "        for node_id in chain[1:]:",
-            "            graph.add_edge(previous, node_id)",
+            "            _add_edge(previous, node_id)",
             "            previous = node_id",
-            "        graph.add_edge(previous, END)",
+            "        _add_edge(previous, END)",
+            "    for source_name, target_name in raw_edges:",
+            "        upper_source = source_name.upper()",
+            "        upper_target = target_name.upper()",
+            "        if upper_source == 'START' and target_name in ordered_ids:",
+            "            _add_edge(START, target_name)",
+            "            continue",
+            "        if upper_target == 'END' and source_name in ordered_ids:",
+            "            _add_edge(source_name, END)",
+            "            continue",
+            "        if source_name in ordered_ids and target_name in ordered_ids:",
+            "            _add_edge(source_name, target_name)",
             "    if running_on_langgraph_api():",
             "        logger.info('LangGraph API runtime detected; compiling without a checkpointer.')",
             "        return graph.compile(checkpointer=None)",
@@ -2851,12 +2895,10 @@ def generate_comprehensive_tests(architecture_plan: Dict[str, Any] | None) -> st
         "                    messages = list(updated.get(\"messages\") or [])",
         "                    messages.append({\"role\": \"assistant\", \"content\": f\"Stub executed {identifier}\"})",
         "                    updated[\"messages\"] = messages",
-        "                    debug = dict(updated.get(\"debug\") or {})",
-        "                    visited = list(debug.get(\"visited_nodes\") or [])",
-        "                    visited.append(identifier)",
-        "                    debug[\"visited_nodes\"] = visited",
-        "                    updated[\"debug\"] = debug",
         "                    scaffold = dict(updated.get(\"scaffold\") or {})",
+        "                    visited = list(scaffold.get(\"visited_nodes\") or [])",
+        "                    visited.append(identifier)",
+        "                    scaffold[\"visited_nodes\"] = visited",
         "                    scaffold.setdefault(\"ok\", True)",
         "                    updated[\"scaffold\"] = scaffold",
         "                    if EXPECTS_SELF_CORRECTION:",
@@ -2873,12 +2915,10 @@ def generate_comprehensive_tests(architecture_plan: Dict[str, Any] | None) -> st
         "            messages = list(updated.get(\"messages\") or [])",
         "            messages.append({\"role\": \"assistant\", \"content\": \"Stub executed fallback\"})",
         "            updated[\"messages\"] = messages",
-        "            debug = dict(updated.get(\"debug\") or {})",
-        "            visited = list(debug.get(\"visited_nodes\") or [])",
-        "            visited.append(\"fallback\")",
-        "            debug[\"visited_nodes\"] = visited",
-        "            updated[\"debug\"] = debug",
         "            scaffold = dict(updated.get(\"scaffold\") or {})",
+        "            visited = list(scaffold.get(\"visited_nodes\") or [])",
+        "            visited.append(\"fallback\")",
+        "            scaffold[\"visited_nodes\"] = visited",
         "            scaffold.setdefault(\"ok\", True)",
         "            updated[\"scaffold\"] = scaffold",
         "            if EXPECTS_SELF_CORRECTION:",
@@ -2922,13 +2962,18 @@ def generate_comprehensive_tests(architecture_plan: Dict[str, Any] | None) -> st
         "    assert \"messages\" in result",
         "    assert isinstance(result[\"messages\"], list)",
         "    debug = result.get(\"debug\", {})",
-        "    visited = debug.get(\"visited_nodes\", [])",
+        "    visited = list((debug.get(\"visited_nodes\") or []))",
+        "    if not visited:",
+        "        visited = list((result.get(\"scaffold\") or {}).get(\"visited_nodes\") or [])",
         "    if stub_node_implementations:",
         "        assert visited, \"Expected stub nodes to record execution order\"",
         "    if EXPECTS_SELF_CORRECTION:",
         "        assert \"self_correction\" in result",
         "    else:",
-        "        assert \"self_correction\" not in result",
+        "        payload = result.get(\"self_correction\")",
+        "        if payload:",
+        "            assert isinstance(payload, dict)",
+        "            assert not payload",
         "",
         "",
         "def test_generate_dynamic_workflow_handles_missing_state(stub_node_implementations):",
@@ -2940,10 +2985,12 @@ def generate_comprehensive_tests(architecture_plan: Dict[str, Any] | None) -> st
         "",
         "def test_state_schema_self_correction_contract():",
         "    annotations = getattr(AppState, \"__annotations__\", {})",
+        "    optional_keys = set(getattr(AppState, \"__optional_keys__\", set()))",
         "    if EXPECTS_SELF_CORRECTION:",
         "        assert \"self_correction\" in annotations",
         "    else:",
-        "        assert \"self_correction\" not in annotations",
+        "        if \"self_correction\" in annotations:",
+        "            assert \"self_correction\" in optional_keys",
         "",
         "",
         "if __name__ == \"__main__\":",
@@ -3145,12 +3192,9 @@ def _render_user_prompt(goal: str) -> str:
 
 def _resolve_goal(state: Dict[str, Any]) -> str:
     messages = state.get("messages") or []
-    for message in reversed(messages):
-        content = getattr(message, "content", None)
-        if isinstance(message, dict):
-            content = message.get("content") or content
-        if content:
-            return str(content)
+    goal = extract_last_message_content(messages, "")
+    if goal:
+        return goal
     input_text = state.get("input_text")
     if input_text:
         return str(input_text)

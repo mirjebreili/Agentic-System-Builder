@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Any, Dict
 from config.settings import get_settings
 
+from asb.utils.message_utils import extract_last_message_content
+
 def _structural_score(plan: Dict[str, Any]) -> float:
     nodes = plan.get("nodes", []) or []
     edges = plan.get("edges", []) or []
@@ -45,7 +47,8 @@ def _prior_success_score(metrics: Dict[str, Any]) -> float:
 def compute_plan_confidence(state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = get_settings()
     plan = dict(state.get("plan") or {})
-    user_text = (state.get("messages") or [{}])[-1].get("content", "") if state.get("messages") else ""
+    messages = state.get("messages") or []
+    user_text = extract_last_message_content(messages, "") if messages else ""
     metrics = dict(state.get("metrics") or {})
 
     self_score = float(plan.get("confidence", 0.0) or 0.0)
