@@ -6,11 +6,22 @@ import logging
 from typing import Any, Callable, Dict, List, MutableMapping, Tuple
 
 from asb.agent.architecture_designer import architecture_designer_node
-from asb.agent.code_fixer import code_fixer_node
+from asb.agent.micro import (
+    bug_localizer_node,
+    context_collector_node,
+    critic_judge_node,
+    diff_patcher_node,
+    import_resolver_node,
+    logic_implementor_node,
+    sandbox_runner_node,
+    skeleton_writer_node,
+    state_schema_writer_node,
+    tot_variant_maker_node,
+    unit_test_writer_node,
+)
 from asb.agent.node_implementor import node_implementor_node
 from asb.agent.report import report
 from asb.agent.requirements_analyzer import requirements_analyzer_node
-from asb.agent.sandbox import comprehensive_sandbox_test as sandbox_smoke
 from asb.agent.scaffold import scaffold_project
 from asb.agent.state import update_state_with_circuit_breaker
 from asb.agent.state_generator import state_generator_node
@@ -21,26 +32,35 @@ logger = logging.getLogger(__name__)
 StepCallable = Callable[[Dict[str, Any]], Dict[str, Any]]
 StepSpec = Tuple[str, StepCallable]
 
-MAX_RETRY_ATTEMPTS = 3
-HALTING_ACTIONS = {"halt", "manual_review", "force_complete"}
+MAX_REPAIR_ATTEMPTS = 2
 
-BUILD_SEQUENCE: Tuple[StepSpec, ...] = (
+BASE_SEQUENCE: Tuple[StepSpec, ...] = (
+    ("context_collector", context_collector_node),
     ("requirements_analyzer", requirements_analyzer_node),
     ("architecture_designer", architecture_designer_node),
     ("state_generator", state_generator_node),
     ("node_implementor", node_implementor_node),
     ("syntax_validator", syntax_validator_node),
     ("scaffold_project", scaffold_project),
-    ("sandbox_smoke", sandbox_smoke),
-    ("report", report),
+    ("state_schema_writer", state_schema_writer_node),
+    ("skeleton_writer", skeleton_writer_node),
+    ("import_resolver", import_resolver_node),
+    ("logic_implementor", logic_implementor_node),
+    ("unit_test_writer", unit_test_writer_node),
+)
+
+REPAIR_SEQUENCE: Tuple[StepSpec, ...] = (
+    ("bug_localizer", bug_localizer_node),
+    ("tot_variant_maker", tot_variant_maker_node),
+    ("critic_judge", critic_judge_node),
+    ("diff_patcher", diff_patcher_node),
 )
 
 
-def _ensure_debug_trace(state: MutableMapping[str, Any]) -> List[Dict[str, Any]]:
+def _ensure_trace(state: MutableMapping[str, Any]) -> List[Dict[str, Any]]:
     debug = state.setdefault("debug", {})
-    coordinator_debug = debug.setdefault("build_coordinator", {})
-    trace = coordinator_debug.setdefault("trace", [])
-    coordinator_debug.setdefault("retry_budget", MAX_RETRY_ATTEMPTS)
+    coordinator = debug.setdefault("build_coordinator", {})
+    trace = coordinator.setdefault("trace", [])
     return trace
 
 
@@ -50,263 +70,170 @@ def _record_trace(
     step: str,
     status: str,
     attempt: int,
+    phase: str,
     **details: Any,
 ) -> None:
-    entry = {"step": step, "status": status, "attempt": attempt}
+    entry = {"step": step, "status": status, "attempt": attempt, "phase": phase}
     if details:
         entry.update(details)
     trace.append(entry)
 
 
-def _force_complete(
-    state: MutableMapping[str, Any],
-    trace: List[Dict[str, Any]],
-    *,
-    attempt: int,
-    reason: str,
-) -> None:
-    state["coordinator_decision"] = "force_complete"
-    state["next_action"] = "force_complete"
-    _record_trace(
-        trace,
-        step="build_coordinator",
-        status="force_complete",
-        attempt=attempt,
-        reason=reason,
-    )
-
-
-def _run_validation_cycle(
+def _run_step(
     state: Dict[str, Any],
-    trace: List[Dict[str, Any]],
     *,
+    name: str,
+    func: StepCallable,
+    trace: List[Dict[str, Any]],
     attempt: int,
+    phase: str,
 ) -> Tuple[Dict[str, Any], bool]:
-    validation_attempts = 0
-    while state.get("next_action") == "fix_code":
-        if validation_attempts >= MAX_RETRY_ATTEMPTS:
-            _force_complete(
-                state,
-                trace,
-                attempt=attempt,
-                reason="syntax_validation_retry_budget_exceeded",
-            )
-            return state, False
+    try:
+        updated = func(state)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Micro-agent step '%s' raised an exception", name)
+        _record_trace(trace, step=name, status="error", attempt=attempt, phase=phase, error=str(exc))
+        state.setdefault("errors", []).append(f"{name}: {exc}")
+        return state, False
 
-        try:
-            state = code_fixer_node(state)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.exception("Code fixer node raised during validation cycle")
-            _record_trace(
-                trace,
-                step="code_fixer",
-                status="error",
-                attempt=attempt,
-                error=str(exc),
-            )
-            state["coordinator_decision"] = "halt"
-            state["next_action"] = "halt"
-            return state, False
+    _record_trace(trace, step=name, status="success", attempt=attempt, phase=phase)
+    return updated, True
 
-        validation_attempts += 1
-        fixer_action = state.get("next_action")
-        _record_trace(
-            trace,
-            step="code_fixer",
-            status="success",
-            attempt=attempt,
-            action=fixer_action,
-            fix_attempt=validation_attempts,
-        )
 
-        if fixer_action in HALTING_ACTIONS - {"force_complete"}:
-            state.setdefault("coordinator_decision", "halt")
-            return state, False
-        if fixer_action == "force_complete":
-            state["coordinator_decision"] = "force_complete"
-            return state, False
-        if fixer_action != "validate_again":
-            break
+def _run_sequence(
+    state: Dict[str, Any],
+    *,
+    sequence: Tuple[StepSpec, ...],
+    trace: List[Dict[str, Any]],
+    attempt: int,
+    phase: str,
+) -> Tuple[Dict[str, Any], bool]:
+    current = state
+    for name, func in sequence:
+        current, ok = _run_step(current, name=name, func=func, trace=trace, attempt=attempt, phase=phase)
+        if not ok:
+            return current, False
+    return current, True
 
-        try:
-            state = syntax_validator_node(state)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.exception("Syntax validator raised during retry cycle")
-            _record_trace(
-                trace,
-                step="syntax_validator",
-                status="error",
-                attempt=attempt,
-                error=str(exc),
-                retry=validation_attempts,
-            )
-            state["coordinator_decision"] = "halt"
-            state["next_action"] = "halt"
-            return state, False
 
-        _record_trace(
-            trace,
-            step="syntax_validator",
-            status="retry",
-            attempt=attempt,
-            retry=validation_attempts + 1,
-            action=state.get("next_action"),
-        )
-
-    return state, True
+def _sandbox_success(state: Dict[str, Any]) -> bool:
+    sandbox = state.get("sandbox")
+    if isinstance(sandbox, dict):
+        return bool(sandbox.get("ok"))
+    return False
 
 
 def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute the build pipeline by invoking micro-agents in sequence."""
+    """Execute the build pipeline and optional repair loop."""
 
     working_state = update_state_with_circuit_breaker(dict(state or {}))
-    trace = _ensure_debug_trace(working_state)
+    trace = _ensure_trace(working_state)
 
-    build_attempts = int(working_state.get("build_attempts", 0)) + 1
-    working_state["build_attempts"] = build_attempts
-    attempt_number = build_attempts
+    attempt = int(working_state.get("build_attempts", 0)) + 1
+    working_state["build_attempts"] = attempt
 
-    consecutive_failures = int(working_state.get("consecutive_failures", 0))
-
-    if attempt_number > MAX_RETRY_ATTEMPTS:
-        _force_complete(
-            working_state,
-            trace,
-            attempt=attempt_number,
-            reason="build_attempts_exceeded",
-        )
+    working_state, ok = _run_sequence(
+        working_state,
+        sequence=BASE_SEQUENCE,
+        trace=trace,
+        attempt=attempt,
+        phase="build",
+    )
+    if not ok:
+        working_state.setdefault("coordinator_decision", "halt")
+        working_state.setdefault("next_action", "halt")
         return working_state
 
-    if consecutive_failures >= MAX_RETRY_ATTEMPTS:
-        _force_complete(
-            working_state,
-            trace,
-            attempt=attempt_number,
-            reason="consecutive_failures_exceeded",
-        )
-        return working_state
-
-    success = True
-    failure_reason = ""
-
-    for step_name, step_callable in BUILD_SEQUENCE:
-        logger.info("Build coordinator invoking step: %s", step_name)
-        try:
-            working_state = step_callable(working_state)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.exception("Micro-agent step '%s' raised an exception", step_name)
-            _record_trace(
-                trace,
-                step=step_name,
-                status="error",
-                attempt=attempt_number,
-                error=str(exc),
-            )
-            success = False
-            failure_reason = f"{step_name}_raised"
-            working_state.setdefault("coordinator_decision", "halt")
-            working_state.setdefault("next_action", "halt")
-            break
-
-        next_action = working_state.get("next_action")
-
-        if step_name == "syntax_validator":
-            working_state, cycle_success = _run_validation_cycle(
-                working_state,
-                trace,
-                attempt=attempt_number,
-            )
-            next_action = working_state.get("next_action")
-            if not cycle_success:
-                success = False
-                failure_reason = "validation_cycle_failed"
-                break
-
-        status_details: Dict[str, Any] = {
-            "step": step_name,
-            "status": "success",
-            "attempt": attempt_number,
-        }
-        if next_action is not None:
-            status_details["next_action"] = next_action
-        trace.append(status_details)
-
-        if next_action in HALTING_ACTIONS:
-            success = False
-            failure_reason = f"{step_name}_requested_{next_action}"
-            working_state.setdefault("coordinator_decision", "halt")
-            break
-
-    if success:
+    # Initial sandbox check.
+    working_state, sandbox_ok = _run_step(
+        working_state,
+        name="sandbox_runner",
+        func=sandbox_runner_node,
+        trace=trace,
+        attempt=attempt,
+        phase="sandbox",
+    )
+    if sandbox_ok and _sandbox_success(working_state):
+        working_state = report(working_state)
         working_state["coordinator_decision"] = "proceed"
         working_state["next_action"] = "scaffold"
         working_state["consecutive_failures"] = 0
-    else:
-        consecutive_failures += 1
-        working_state["consecutive_failures"] = consecutive_failures
-        if working_state.get("coordinator_decision") == "force_complete":
-            pass
-        elif consecutive_failures >= MAX_RETRY_ATTEMPTS:
-            _force_complete(
-                working_state,
-                trace,
-                attempt=attempt_number,
-                reason=failure_reason or "retry_budget_exceeded",
-            )
-        else:
+        return working_state
+
+    repair_attempt = 0
+    while repair_attempt < MAX_REPAIR_ATTEMPTS:
+        repair_attempt += 1
+        working_state, ok = _run_sequence(
+            working_state,
+            sequence=REPAIR_SEQUENCE,
+            trace=trace,
+            attempt=attempt,
+            phase=f"repair_{repair_attempt}",
+        )
+        if not ok:
             working_state.setdefault("coordinator_decision", "halt")
             working_state.setdefault("next_action", "halt")
+            return working_state
 
+        working_state, sandbox_ok = _run_step(
+            working_state,
+            name=f"sandbox_runner_retry_{repair_attempt}",
+            func=sandbox_runner_node,
+            trace=trace,
+            attempt=attempt,
+            phase=f"sandbox_retry_{repair_attempt}",
+        )
+        if sandbox_ok and _sandbox_success(working_state):
+            working_state = report(working_state)
+            working_state["coordinator_decision"] = "proceed"
+            working_state["next_action"] = "scaffold"
+            working_state["consecutive_failures"] = 0
+            return working_state
+
+    working_state.setdefault("errors", []).append("sandbox_validation_failed")
+    working_state["coordinator_decision"] = "halt"
+    working_state["next_action"] = "halt"
+    working_state["consecutive_failures"] = int(working_state.get("consecutive_failures", 0)) + 1
     return working_state
 
 
 def build_coordinator_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """LangGraph-style node wrapper for :func:`coordinate_build`."""
+    """LangGraph-style wrapper for :func:`coordinate_build`."""
 
     messages = list(state.get("messages") or [])
-
     try:
-        updated_state = coordinate_build(state)
+        updated = coordinate_build(state)
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.exception("Unhandled error in build coordinator node")
-        fallback_state = update_state_with_circuit_breaker(dict(state or {}))
-        fallback_state["consecutive_failures"] = int(
-            fallback_state.get("consecutive_failures", 0)
-        ) + 1
-        fallback_state["coordinator_decision"] = "halt"
-        fallback_state["next_action"] = "halt"
+        fallback = update_state_with_circuit_breaker(dict(state or {}))
+        fallback.setdefault("errors", []).append(f"build_coordinator: {exc}")
+        fallback["coordinator_decision"] = "halt"
+        fallback["next_action"] = "halt"
         messages.append(
             {
                 "role": "assistant",
                 "content": "[build-coordinator-error]\nEncountered an unexpected error. Halting orchestration.",
             }
         )
-        fallback_state["messages"] = messages
-        trace = _ensure_debug_trace(fallback_state)
-        _record_trace(
-            trace,
-            step="build_coordinator",
-            status="error",
-            attempt=int(fallback_state.get("build_attempts", 0) or 0) + 1,
-            error=str(exc),
-        )
-        return fallback_state
+        fallback["messages"] = messages
+        return fallback
 
-    decision = updated_state.get("coordinator_decision", "undecided")
-    next_action = updated_state.get("next_action", "")
+    decision = updated.get("coordinator_decision", "undecided")
+    next_action = updated.get("next_action", "")
     messages.append(
         {
             "role": "assistant",
             "content": f"[build-coordinator]\nDecision: {decision}; next: {next_action or 'n/a'}",
         }
     )
-    updated_state["messages"] = messages
-    return updated_state
+    updated["messages"] = messages
+    return updated
 
 
 __all__ = [
-    "BUILD_SEQUENCE",
-    "MAX_RETRY_ATTEMPTS",
+    "BASE_SEQUENCE",
+    "REPAIR_SEQUENCE",
+    "MAX_REPAIR_ATTEMPTS",
     "coordinate_build",
     "build_coordinator_node",
 ]

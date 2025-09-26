@@ -194,7 +194,7 @@ def design_architecture(state: Dict[str, Any]) -> Dict[str, Any]:
 
     updated_state = dict(state)
     updated_state["architecture"] = architecture
-    print(f"🔍 ARCHITECTURE DEBUG - Processed architecture: {architecture}")
+    logger.debug("Architecture debug - processed architecture: %s", architecture)
     return updated_state
 
 

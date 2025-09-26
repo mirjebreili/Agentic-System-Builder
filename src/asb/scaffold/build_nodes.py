@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -9,6 +10,8 @@ from asb.utils.fileops import atomic_write, ensure_dir
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+logger = logging.getLogger(__name__)
 
 SCAFFOLD_BASE_PATH_KEY = "_scaffold_base_path"
 SCAFFOLD_ROOT_KEY = "_scaffold_root_path"
@@ -120,7 +123,7 @@ def copy_base_files(state: Dict[str, Any]) -> List[str]:
                 copied.append(dest_rel)
             else:
                 missing_files.append(str(src_path))
-                print(f"Template file missing, skipping: {src_path}")
+                logger.warning("Template file missing, skipping: %s", src_path)
 
         env_example = root_path / ".env.example"
         if env_example.exists():
@@ -364,8 +367,8 @@ def write_node_modules(
                 architecture_plan
             )
 
-        print(f"🔍 BUILD DEBUG - Architecture plan: {architecture_plan}")
-        print(f"🔍 BUILD DEBUG - User goal: {user_goal}")
+        logger.debug("Build debug - architecture plan: %s", architecture_plan)
+        logger.debug("Build debug - user goal: %s", user_goal)
 
         node_specs: List[Tuple[str, str, List[str], Dict[str, Any]]] = []
         generated_nodes: Dict[str, str] = {}
@@ -376,9 +379,7 @@ def write_node_modules(
         if isinstance(architecture_plan, dict):
             node_specs = _build_plan_node_specs(architecture_plan)
             if node_specs:
-                print(
-                    f"🔍 BUILD DEBUG - Found {len(node_specs)} nodes to generate"
-                )
+                logger.debug("Build debug - found %d nodes to generate", len(node_specs))
                 module_lookup = {module: node_id for node_id, module, _, _ in node_specs}
                 if not requires_self_correction:
                     goal_lower = user_goal.lower()
@@ -407,9 +408,7 @@ def write_node_modules(
                                 normalized_generated[normalized_key] = source
 
         if not node_specs:
-            print(
-                "⚠️  No architecture plan found - using fallback generation"
-            )
+            logger.info("No architecture plan found - using fallback generation")
             architecture_fallback = state.get("architecture") or {}
             node_specs = scaffold_module._collect_architecture_nodes(architecture_fallback)
 

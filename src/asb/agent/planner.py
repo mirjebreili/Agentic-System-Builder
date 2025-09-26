@@ -116,6 +116,6 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         logger.debug("Unable to update node implementations for plan.", exc_info=True)
 
-    print(f"🔍 PLANNER DEBUG - Created plan: {best}")
+    logger.debug("Planner debug - selected plan: %s", best)
 
     return {"plan": best, "messages": msgs, "flags":{"more_steps": True, "steps_done": False}}

@@ -7,6 +7,10 @@ from typing import Any, Dict, Iterable, List, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from asb.llm.client import get_chat_model
+from asb.utils.message_utils import (
+    extract_last_message_content,
+    extract_user_messages_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,33 +25,10 @@ _DEFAULT_STUB_TEMPLATE = (
 def personalize_prompts(state: Dict[str, Any], node: Dict[str, Any]) -> Dict[str, Any]:
     messages = list(state.get("messages") or [])
 
-    latest_user_content: str | None = None
-    for message in reversed(messages):
-        role = None
-        content = None
-        if isinstance(message, dict):
-            role = message.get("role")
-            content = message.get("content")
-        else:
-            role = getattr(message, "type", None) or getattr(message, "role", None)
-            content = getattr(message, "content", None)
-            if content is None and isinstance(message, str):
-                content = message
-        if content is None:
-            continue
-        content_text = str(content).strip()
-        if not content_text:
-            continue
-        normalized_role = (str(role).lower() if role else "")
-        if not normalized_role and hasattr(message, "__class__"):
-            class_name = message.__class__.__name__.lower()
-            if "human" in class_name or "user" in class_name:
-                normalized_role = "user"
-        if normalized_role in {"user", "human"}:
-            latest_user_content = content_text
-            break
-        if latest_user_content is None:
-            latest_user_content = content_text
+    user_messages = extract_user_messages_content(messages)
+    latest_user_content = user_messages[-1] if user_messages else None
+    if latest_user_content is None and messages:
+        latest_user_content = extract_last_message_content(messages, "")
 
     plan_goal = None
     plan = state.get("plan")
