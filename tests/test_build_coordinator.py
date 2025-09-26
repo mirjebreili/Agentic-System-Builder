@@ -7,128 +7,126 @@ import pytest
 from asb.agent import build_coordinator
 
 
-def _make_sequence(steps: List[Tuple[str, Any]]) -> Tuple[Tuple[str, Any], ...]:
-    return tuple((name, func) for name, func in steps)
+def _make_step(name: str, calls: List[str]) -> build_coordinator.StepCallable:
+    def _step(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append(name)
+        return state
+
+    return _step
 
 
 def test_coordinate_build_success(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: List[str] = []
+    base_sequence: Tuple[Tuple[str, build_coordinator.StepCallable], ...] = (
+        ("context_collector", _make_step("context", calls)),
+        ("requirements_analyzer", _make_step("requirements", calls)),
+        ("architecture_designer", _make_step("architecture", calls)),
+        ("state_generator", _make_step("state", calls)),
+        ("node_implementor", _make_step("node", calls)),
+        ("syntax_validator", _make_step("syntax", calls)),
+        ("scaffold_project", _make_step("scaffold", calls)),
+        ("state_schema_writer", _make_step("schema", calls)),
+        ("skeleton_writer", _make_step("skeleton", calls)),
+        ("import_resolver", _make_step("imports", calls)),
+        ("logic_implementor", _make_step("logic", calls)),
+        ("unit_test_writer", _make_step("tests", calls)),
+    )
+    monkeypatch.setattr(build_coordinator, "BASE_SEQUENCE", base_sequence)
 
-    def make_step(name: str):
-        def _step(state: Dict[str, Any]) -> Dict[str, Any]:
-            calls.append(name)
-            state.setdefault("messages", [])
-            return state
+    def sandbox_success(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("sandbox")
+        new_state = dict(state)
+        new_state["sandbox"] = {"ok": True, "history": []}
+        return new_state
 
-        return _step
+    monkeypatch.setattr(build_coordinator, "sandbox_runner_node", sandbox_success)
 
-    def syntax_success(state: Dict[str, Any]) -> Dict[str, Any]:
-        calls.append("syntax_validator")
-        state["next_action"] = "complete"
-        state["validation_errors"] = []
+    def report_stub(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("report")
+        state["report_called"] = True
         return state
 
-    sequence = _make_sequence(
-        [
-            ("requirements_analyzer", make_step("requirements")),
-            ("architecture_designer", make_step("architecture")),
-            ("state_generator", make_step("state")),
-            ("node_implementor", make_step("implementor")),
-            ("syntax_validator", syntax_success),
-            ("scaffold_project", make_step("scaffold")),
-            ("sandbox_smoke", make_step("sandbox")),
-            ("report", make_step("report")),
-        ]
-    )
-    monkeypatch.setattr(build_coordinator, "BUILD_SEQUENCE", sequence)
+    monkeypatch.setattr(build_coordinator, "report", report_stub)
 
-    initial_state: Dict[str, Any] = {"messages": []}
-    result = build_coordinator.coordinate_build(initial_state)
+    result = build_coordinator.coordinate_build({"messages": []})
 
     assert result["coordinator_decision"] == "proceed"
     assert result["next_action"] == "scaffold"
-    assert result["build_attempts"] == 1
     assert result["consecutive_failures"] == 0
+    assert result["report_called"] is True
+    assert "sandbox" in calls
     trace_steps = [entry["step"] for entry in result["debug"]["build_coordinator"]["trace"]]
-    assert "requirements_analyzer" in trace_steps
-    assert "report" in trace_steps
+    assert trace_steps[: len(base_sequence)] == [name for name, _ in base_sequence]
 
 
-def test_coordinate_build_retries_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    validation_calls: List[str] = []
-    fixer_calls: List[int] = []
+def test_coordinate_build_triggers_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: List[str] = []
+    repair_calls: List[str] = []
 
-    def syntax_retry(state: Dict[str, Any]) -> Dict[str, Any]:
-        validation_calls.append("run")
-        attempt = len(validation_calls)
-        state["next_action"] = "fix_code" if attempt == 1 else "complete"
-        return state
-
-    def fixer(state: Dict[str, Any]) -> Dict[str, Any]:
-        fixer_calls.append(len(fixer_calls))
-        state["next_action"] = "validate_again"
-        state["fix_attempts"] = state.get("fix_attempts", 0) + 1
-        return state
-
-    sequence = _make_sequence(
-        [
-            ("requirements_analyzer", lambda s: s),
-            ("architecture_designer", lambda s: s),
-            ("state_generator", lambda s: s),
-            ("node_implementor", lambda s: s),
-            ("syntax_validator", syntax_retry),
-            ("scaffold_project", lambda s: s),
-            ("sandbox_smoke", lambda s: s),
-            ("report", lambda s: s),
-        ]
+    base_sequence: Tuple[Tuple[str, build_coordinator.StepCallable], ...] = (
+        ("context_collector", _make_step("context", calls)),
+        ("scaffold_project", _make_step("scaffold", calls)),
     )
-    monkeypatch.setattr(build_coordinator, "BUILD_SEQUENCE", sequence)
-    monkeypatch.setattr(build_coordinator, "syntax_validator_node", syntax_retry)
-    monkeypatch.setattr(build_coordinator, "code_fixer_node", fixer)
+    monkeypatch.setattr(build_coordinator, "BASE_SEQUENCE", base_sequence)
+
+    def sandbox_flaky(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("sandbox")
+        attempt = len([c for c in calls if c == "sandbox"])
+        sandbox_state = {"ok": attempt > 1, "history": []}
+        new_state = dict(state)
+        new_state["sandbox"] = sandbox_state
+        return new_state
+
+    monkeypatch.setattr(build_coordinator, "sandbox_runner_node", sandbox_flaky)
+
+    repair_sequence: Tuple[Tuple[str, build_coordinator.StepCallable], ...] = (
+        ("bug_localizer", _make_step("bug_localizer", repair_calls)),
+        ("tot_variant_maker", _make_step("tot", repair_calls)),
+        ("critic_judge", _make_step("judge", repair_calls)),
+        ("diff_patcher", _make_step("patch", repair_calls)),
+    )
+    monkeypatch.setattr(build_coordinator, "REPAIR_SEQUENCE", repair_sequence)
+    monkeypatch.setattr(build_coordinator, "report", lambda s: s)
 
     result = build_coordinator.coordinate_build({})
 
     assert result["coordinator_decision"] == "proceed"
-    assert result["consecutive_failures"] == 0
-    assert len(validation_calls) == 2
-    assert len(fixer_calls) == 1
+    assert any(call == "bug_localizer" for call in repair_calls)
     trace = result["debug"]["build_coordinator"]["trace"]
-    assert any(entry["step"] == "code_fixer" for entry in trace)
+    assert any(entry["phase"].startswith("repair") for entry in trace)
 
 
-def test_coordinate_build_circuit_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
-    def syntax_always_fail(state: Dict[str, Any]) -> Dict[str, Any]:
-        state["next_action"] = "fix_code"
-        return state
-
-    def fixer(state: Dict[str, Any]) -> Dict[str, Any]:
-        state["next_action"] = "validate_again"
-        state["fix_attempts"] = state.get("fix_attempts", 0) + 1
-        return state
-
-    def scaffold(state: Dict[str, Any]) -> Dict[str, Any]:
-        pytest.fail("scaffold step should not run after circuit breaker")
-
-    sequence = _make_sequence(
-        [
-            ("requirements_analyzer", lambda s: s),
-            ("architecture_designer", lambda s: s),
-            ("state_generator", lambda s: s),
-            ("node_implementor", lambda s: s),
-            ("syntax_validator", syntax_always_fail),
-            ("scaffold_project", scaffold),
-            ("sandbox_smoke", lambda s: s),
-            ("report", lambda s: s),
-        ]
+def test_coordinate_build_exhausts_repair_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_sequence: Tuple[Tuple[str, build_coordinator.StepCallable], ...] = (
+        ("context_collector", lambda s: s),
+        ("scaffold_project", lambda s: s),
     )
-    monkeypatch.setattr(build_coordinator, "BUILD_SEQUENCE", sequence)
-    monkeypatch.setattr(build_coordinator, "syntax_validator_node", syntax_always_fail)
-    monkeypatch.setattr(build_coordinator, "code_fixer_node", fixer)
+    monkeypatch.setattr(build_coordinator, "BASE_SEQUENCE", base_sequence)
+
+    def sandbox_fail(state: Dict[str, Any]) -> Dict[str, Any]:
+        new_state = dict(state)
+        new_state["sandbox"] = {"ok": False, "history": []}
+        return new_state
+
+    monkeypatch.setattr(build_coordinator, "sandbox_runner_node", sandbox_fail)
+
+    def repair_step(state: Dict[str, Any]) -> Dict[str, Any]:
+        return state
+
+    repair_sequence: Tuple[Tuple[str, build_coordinator.StepCallable], ...] = (
+        ("bug_localizer", repair_step),
+        ("tot_variant_maker", repair_step),
+        ("critic_judge", repair_step),
+        ("diff_patcher", repair_step),
+    )
+    monkeypatch.setattr(build_coordinator, "REPAIR_SEQUENCE", repair_sequence)
+    monkeypatch.setattr(build_coordinator, "report", lambda s: s)
 
     result = build_coordinator.coordinate_build({})
 
-    assert result["coordinator_decision"] == "force_complete"
-    assert result["next_action"] == "force_complete"
+    assert result["coordinator_decision"] == "halt"
     assert result["consecutive_failures"] >= 1
+    assert "sandbox_validation_failed" in result.get("errors", [])
     trace = result["debug"]["build_coordinator"]["trace"]
-    assert any(entry.get("reason") == "syntax_validation_retry_budget_exceeded" for entry in trace)
+    sandbox_retries = [entry for entry in trace if entry["phase"].startswith("sandbox_retry")]
+    assert len(sandbox_retries) == build_coordinator.MAX_REPAIR_ATTEMPTS

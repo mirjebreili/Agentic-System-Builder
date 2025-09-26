@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Mapping, MutableMapping
 from typing import Any, Iterable, Tuple
@@ -13,6 +14,8 @@ from .subgraphs import (
 )
 
 ScaffoldState = MutableMapping[str, Any]
+
+logger = logging.getLogger(__name__)
 
 MAX_VALIDATION_ATTEMPTS = 3
 
@@ -129,11 +132,10 @@ def scaffold_coordinator(state: Mapping[str, Any] | None) -> dict[str, Any]:
         if base_path:
             working_state["_scaffold_base_path"] = base_path
 
-    print(f"🔍 SCAFFOLD DEBUG - Architecture plan: {bool(architecture_plan)}")
-    print(f"🔍 SCAFFOLD DEBUG - User goal: {user_goal}")
-    print(
-        f"🔍 SCAFFOLD DEBUG - Plan nodes: {architecture_plan.get('nodes', []) if isinstance(architecture_plan, dict) else []}"
-    )
+    logger.debug("Scaffold debug - architecture plan present: %s", bool(architecture_plan))
+    logger.debug("Scaffold debug - user goal: %s", user_goal)
+    if isinstance(architecture_plan, dict):
+        logger.debug("Scaffold debug - plan nodes: %s", architecture_plan.get("nodes", []))
 
     build_phase, started = _start_phase(
         working_state,

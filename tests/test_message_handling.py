@@ -2,6 +2,8 @@
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
 from asb.utils.message_utils import (
     extract_last_message_content,
     extract_user_messages_content,
@@ -49,6 +51,16 @@ def test_extract_user_messages_content():
     assert result == ["Question 1", "Question 2"]
 
 
+def test_extract_user_messages_content_dict_variants():
+    messages = [
+        {"role": "USER", "content": "Upper"},
+        {"role": "assistant", "content": "ignored"},
+        {"role": "Human", "content": "Case"},
+    ]
+
+    assert extract_user_messages_content(messages) == ["Upper", "Case"]
+
+
 def test_safe_message_access_langchain():
     """Test safe access to LangChain message fields."""
     message = HumanMessage(content="test content")
@@ -76,3 +88,13 @@ def test_mixed_message_formats():
 
     result = extract_last_message_content(messages)
     assert result == "LangChain message"
+
+
+def test_extract_last_message_content_string_fallback():
+    messages = ["raw string", SystemMessage(content="system"), HumanMessage(content="human")]
+    assert extract_last_message_content(messages) == "human"
+
+
+def test_safe_message_access_handles_missing_roles():
+    message = {"content": "payload"}
+    assert safe_message_access(message, "role", "default") == "default"
