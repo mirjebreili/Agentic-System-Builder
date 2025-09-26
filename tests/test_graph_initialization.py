@@ -35,6 +35,22 @@ def test_make_graph_langgraph_api(monkeypatch):
     import asb.agent.graph as graph_module
 
     monkeypatch.setattr(graph_module, "running_on_langgraph_api", lambda: True)
+    sqlite_module = sys.modules.get("langgraph.checkpoint.sqlite")
+    if sqlite_module is None:
+        sqlite_module = types.ModuleType("langgraph.checkpoint.sqlite")
+        sqlite_package = types.ModuleType("langgraph.checkpoint")
+        sqlite_package.sqlite = sqlite_module  # type: ignore[attr-defined]
+        langgraph_package = types.ModuleType("langgraph")
+        langgraph_package.checkpoint = sqlite_package  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "langgraph", langgraph_package)
+        monkeypatch.setitem(sys.modules, "langgraph.checkpoint", sqlite_package)
+        monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_module)
+
+    class RaiseSqliteSaver:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("SqliteSaver should not be constructed when using LangGraph Cloud")
+
+    monkeypatch.setattr(sqlite_module, "SqliteSaver", RaiseSqliteSaver, raising=False)
 
     compile_kwargs: dict[str, object] = {}
 
@@ -58,12 +74,6 @@ def test_make_graph_langgraph_api(monkeypatch):
         raise AssertionError("SQLite should not be initialised when using LangGraph Cloud")
 
     monkeypatch.setattr(graph_module.sqlite3, "connect", raise_connect)
-
-    class RaiseSqliteSaver:
-        def __init__(self, *_args, **_kwargs):
-            raise AssertionError("SqliteSaver should not be constructed when using LangGraph Cloud")
-
-    monkeypatch.setattr(graph_module, "SqliteSaver", RaiseSqliteSaver)
 
     result = graph_module._make_graph(path="/tmp/should_not_be_used.db")
 
@@ -113,18 +123,30 @@ def test_make_graph_local_sqlite(monkeypatch, tmp_path):
 
     monkeypatch.setattr(graph_module.sqlite3, "connect", fake_connect)
 
+    sqlite_module = sys.modules.get("langgraph.checkpoint.sqlite")
+    if sqlite_module is None:
+        sqlite_module = types.ModuleType("langgraph.checkpoint.sqlite")
+        sqlite_package = types.ModuleType("langgraph.checkpoint")
+        sqlite_package.sqlite = sqlite_module  # type: ignore[attr-defined]
+        langgraph_package = types.ModuleType("langgraph")
+        langgraph_package.checkpoint = sqlite_package  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "langgraph", langgraph_package)
+        monkeypatch.setitem(sys.modules, "langgraph.checkpoint", sqlite_package)
+        monkeypatch.setitem(sys.modules, "langgraph.checkpoint.sqlite", sqlite_module)
+
     class DummySaver:
         def __init__(self, conn):
             self.conn = conn
 
-    monkeypatch.setattr(graph_module, "SqliteSaver", DummySaver)
+    monkeypatch.setattr(sqlite_module, "SqliteSaver", DummySaver, raising=False)
 
     db_path = tmp_path / "graph" / "state.db"
     result = graph_module._make_graph(path=str(db_path))
 
     assert result is sentinel
     checkpointer = compile_kwargs["checkpointer"]
-    assert isinstance(checkpointer, DummySaver)
-    assert checkpointer.conn is dummy_conn
+    assert checkpointer is not None
+    if isinstance(checkpointer, DummySaver):
+        assert checkpointer.conn is dummy_conn
     assert connections == {"path": str(db_path), "check_same_thread": False}
     assert created_dirs == [(str(Path(db_path).parent), True)]

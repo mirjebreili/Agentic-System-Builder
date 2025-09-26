@@ -25,8 +25,6 @@ UPDATED_DEPENDENCIES = [
     '  "langchain-core>=0.3,<0.4",',
     '  "langchain-openai>=0.3,<0.4",',
     '  "pydantic>=2.7,<3",',
-    '  "langgraph-checkpoint-sqlite>=2.0.0",',
-    '  "aiosqlite>=0.17.0",',
     '  "pytest>=7.0.0",',
     '  "langgraph-cli[inmem]>=0.1.0",',
     '  "requests>=2.25.0",',
@@ -34,6 +32,11 @@ UPDATED_DEPENDENCIES = [
     '  "isort>=5.0.0",',
     '  "mypy>=1.0.0",',
     '  "bandit[toml]>=1.7.0",',
+]
+
+STANDALONE_DEPENDENCIES = [
+    '  "langgraph-checkpoint-sqlite>=2.0.0",',
+    '  "aiosqlite>=0.17.0",',
 ]
 
 
@@ -75,6 +78,8 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
         assert "StateGraph(AppState)" in graph_contents
         assert "ARCHITECTURE_STATE = json.loads" in graph_contents
         assert "def analyze_workflow_pattern" in graph_contents
+        assert "def compile_app" in graph_contents
+        assert "LANGGRAPH_API_MODE" in graph_contents
         assert "def generate_dynamic_workflow" in graph_contents
         assert "graph = _make_graph()" in graph_contents
 
@@ -106,6 +111,9 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
 
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         for dependency in UPDATED_DEPENDENCIES:
+            assert dependency in pyproject_text
+        assert "[project.optional-dependencies]" in pyproject_text
+        for dependency in STANDALONE_DEPENDENCIES:
             assert dependency in pyproject_text
     finally:
         if project_dir.exists():
