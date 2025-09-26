@@ -14,9 +14,8 @@ from asb.agent.requirements_analyzer import requirements_analyzer_node
 from asb.agent.architecture_designer import architecture_designer_node
 from asb.agent.state_generator import state_generator_node
 from asb.agent.node_implementor import node_implementor_node
-from asb.scaffold.coordinator import scaffold_coordinator
-from asb.agent.syntax_validator import syntax_validator_node
-from asb.agent.code_fixer import code_fixer_node
+from asb.agent.build_coordinator import build_coordinator_node
+from asb.agent.micro import bug_localizer_node, diff_patcher_node, sandbox_runner_node
 from asb.agent.sandbox import comprehensive_sandbox_test as sandbox_smoke
 from asb.agent.report import report
 
@@ -56,25 +55,13 @@ def running_on_langgraph_api() -> bool:
 def route_after_review(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "requirements_analyzer"
 
-def route_after_validation(state: Dict[str, Any]) -> str:
-    fix_attempts = state.get("fix_attempts", 0)
+def route_after_build_coordinator(state: Dict[str, Any]) -> str:
+    decision = (state or {}).get("coordinator_decision")
 
-    if fix_attempts >= 3:
-        print(f"🛑 CIRCUIT BREAKER: {fix_attempts} attempts reached - FORCING COMPLETION")
-        return "force_complete"
+    if decision == "proceed":
+        return "sandbox_smoke"
 
-    return state.get("next_action", "complete")
-
-
-def route_after_fixer(state: Dict[str, Any]) -> str:
-    fix_attempts = state.get("fix_attempts", 0)
-
-    if fix_attempts >= 3:
-        print(f"🛑 CIRCUIT BREAKER: {fix_attempts} attempts reached - FORCING COMPLETION")
-        return "force_complete"
-
-    next_action = state.get("next_action", "validate_again")
-    return next_action
+    return "bug_localizer"
 
 
 def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
@@ -86,9 +73,10 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_node("architecture_designer", architecture_designer_node)
     g.add_node("state_generator", state_generator_node)
     g.add_node("node_implementor", node_implementor_node)
-    g.add_node("scaffold_coordinator", scaffold_coordinator)
-    g.add_node("syntax_validator", syntax_validator_node)
-    g.add_node("code_fixer", code_fixer_node)
+    g.add_node("build_coordinator", build_coordinator_node)
+    g.add_node("bug_localizer", bug_localizer_node)
+    g.add_node("diff_patcher", diff_patcher_node)
+    g.add_node("sandbox_runner", sandbox_runner_node)
     g.add_node("sandbox_smoke", sandbox_smoke)
     g.add_node("report", report)
 
@@ -103,26 +91,18 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_edge("requirements_analyzer", "architecture_designer")
     g.add_edge("architecture_designer", "state_generator")
     g.add_edge("state_generator", "node_implementor")
-    g.add_edge("node_implementor", "syntax_validator")
+    g.add_edge("node_implementor", "build_coordinator")
     g.add_conditional_edges(
-        "syntax_validator",
-        route_after_validation,
+        "build_coordinator",
+        route_after_build_coordinator,
         {
-            "complete": "scaffold_coordinator",
-            "fix_code": "code_fixer",
-            "force_complete": "scaffold_coordinator",
+            "sandbox_smoke": "sandbox_smoke",
+            "bug_localizer": "bug_localizer",
         },
     )
-    g.add_edge("scaffold_coordinator", "sandbox_smoke")
-    g.add_conditional_edges(
-        "code_fixer",
-        route_after_fixer,
-        {
-            "validate_again": "syntax_validator",
-            "manual_review": "report",
-            "force_complete": "sandbox_smoke",
-        },
-    )
+    g.add_edge("bug_localizer", "diff_patcher")
+    g.add_edge("diff_patcher", "sandbox_runner")
+    g.add_edge("sandbox_runner", "report")
     g.add_edge("sandbox_smoke", "report")
     g.add_edge("report", END)
 
