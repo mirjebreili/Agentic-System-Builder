@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 _TRACE_PATTERN = re.compile(r'File "(?P<path>.+?)", line (?P<line>\d+)', re.MULTILINE)
 
@@ -36,7 +36,47 @@ def _normalize_path(path: str, project_root: Path | None) -> str:
 
 
 def _parse_entry(entry: Dict[str, Any], project_root: Path | None) -> List[Dict[str, Any]]:
-    stderr = entry.get("stderr") or ""
+    errors = entry.get("errors")
+    if isinstance(errors, Iterable):
+        localizations: List[Dict[str, Any]] = []
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            path = error.get("file")
+            line = error.get("line")
+            message = error.get("message") or ""
+            if path:
+                normalized = _normalize_path(str(path), project_root)
+            else:
+                normalized = None
+            if isinstance(line, int):
+                line_start = line_end = line
+            else:
+                line_start = line_end = None
+            localizations.append(
+                {
+                    "command": error.get("command") or entry.get("name"),
+                    "path": normalized,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "message": message,
+                }
+            )
+        if localizations:
+            return localizations
+
+    # Fallback to parsing stderr when structured errors are missing.
+    stderr = ""
+    logs = entry.get("logs")
+    if isinstance(logs, dict):
+        stderr_entry = logs.get("stderr")
+        if isinstance(stderr_entry, dict):
+            stderr = stderr_entry.get("text") or ""
+        elif isinstance(stderr_entry, str):
+            stderr = stderr_entry
+    else:
+        stderr = entry.get("stderr") or ""
+
     matches = list(_TRACE_PATTERN.finditer(stderr))
     localizations: List[Dict[str, Any]] = []
     for match in matches:
@@ -62,9 +102,14 @@ def bug_localizer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     project_root = _determine_project_root(working_state)
 
     sandbox = working_state.get("sandbox")
-    history = []
+    history: List[Dict[str, Any]] = []
     if isinstance(sandbox, dict):
-        history = list(sandbox.get("last_run") or sandbox.get("history") or [])
+        last_run = sandbox.get("last_run")
+        if isinstance(last_run, dict):
+            history.append(last_run)
+        past = sandbox.get("history")
+        if isinstance(past, list):
+            history.extend([item for item in past if isinstance(item, dict)])
 
     localizations: List[Dict[str, Any]] = []
     for entry in history:
