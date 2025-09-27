@@ -99,7 +99,7 @@ def sandbox_runner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     commands: List[Dict[str, Any]] = [
         {
-            "name": "meta_ast_check",
+            "name": "meta_langgraph",
             "command": [
                 "python",
                 "-c",
@@ -115,7 +115,7 @@ def sandbox_runner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if project_root is not None:
         commands.append(
             {
-                "name": "project_ast_check",
+                "name": "project_langgraph",
                 "command": [
                     "python",
                     "-c",
@@ -184,7 +184,8 @@ def sandbox_runner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     history.append(summary)
 
     sandbox["history"] = history[-10:]
-    sandbox["last_run"] = summary
+    sandbox["last_run_summary"] = summary
+    sandbox["last_run"] = summary.get("cmds", [])
     sandbox["ok"] = all(status == "ok" for status in statuses.values())
 
     working_state["sandbox"] = sandbox

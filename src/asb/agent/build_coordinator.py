@@ -155,7 +155,8 @@ def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
         attempt=attempt,
         phase="sandbox",
     )
-    if sandbox_ok and _sandbox_success(working_state):
+    final_result: Dict[str, Any] | None = None
+    if sandbox_ok:
         working_state, _ = _run_step(
             working_state,
             name="final_check",
@@ -164,7 +165,8 @@ def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
             attempt=attempt,
             phase="finalize",
         )
-        if not (working_state.get("final_check") or {}).get("ok"):
+        final_result = working_state.get("final_check") or {}
+        if not final_result.get("ok"):
             working_state, _ = _run_step(
                 working_state,
                 name="final_check_fallback",
@@ -173,6 +175,9 @@ def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
                 attempt=attempt,
                 phase="finalize",
             )
+            final_result = working_state.get("final_check") or {}
+
+    if sandbox_ok and _sandbox_success(working_state):
         working_state = report(working_state)
         working_state["coordinator_decision"] = "proceed"
         working_state["next_action"] = "scaffold"

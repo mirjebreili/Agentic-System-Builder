@@ -11,6 +11,16 @@ from asb.utils.fileops import atomic_write, ensure_dir
 _SENTINEL = "raise NotImplementedError(\"node logic not yet implemented\")"
 
 
+def _norm_node(data: Dict[str, Any]) -> Dict[str, Any]:
+    name = (data.get("name") or data.get("node_id") or data.get("id") or "").strip()
+    if not name:
+        base = (data.get("responsibility") or "node").split()[0]
+        name = re.sub(r"[^A-Za-z0-9_]+", "_", base).strip("_") or "node"
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
+    data["name"] = name
+    return data
+
+
 def _determine_project_root(state: Dict[str, Any]) -> Path | None:
     scaffold = state.get("scaffold")
     if isinstance(scaffold, dict):
@@ -35,15 +45,19 @@ def _iter_plan_nodes(state: Dict[str, Any]) -> Iterable[Tuple[str, str]]:
         raw_nodes = plan.get("nodes")
         if isinstance(raw_nodes, list):
             nodes = raw_nodes
+    seen: set[str] = set()
     for node in nodes:
-        if isinstance(node, dict):
-            node_id = node.get("id") or node.get("name") or node.get("label")
-            if not isinstance(node_id, str):
-                continue
-            identifier = node_id.strip()
-            if not identifier:
-                continue
-            yield identifier, _sanitize_identifier(identifier)
+        if not isinstance(node, dict):
+            continue
+        normalized = _norm_node(dict(node))
+        name = normalized.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        module_name = _sanitize_identifier(name)
+        if module_name in seen:
+            continue
+        seen.add(module_name)
+        yield name, module_name
 
 
 def _render_skeleton(node_id: str, module_name: str) -> str:
