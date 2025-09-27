@@ -104,7 +104,7 @@ def bug_localizer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     sandbox = working_state.get("sandbox")
     history: List[Dict[str, Any]] = []
     if isinstance(sandbox, dict):
-        last_run = sandbox.get("last_run")
+        last_run = sandbox.get("last_run_summary") or sandbox.get("last_run")
         if isinstance(last_run, dict):
             history.append(last_run)
         past = sandbox.get("history")

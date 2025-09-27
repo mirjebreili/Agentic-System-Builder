@@ -7,111 +7,77 @@ import pathlib
 import subprocess
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, Iterable, Tuple
 
 import requests
 
-DEFAULT_URL = os.getenv("LG_DEV_URL", "http://127.0.0.1:2024")
-DOCS_URL = f"{DEFAULT_URL}/docs"
-RUNS_WAIT_URL = f"{DEFAULT_URL}/runs/wait"
-RUNS_STREAM_URL = f"{DEFAULT_URL}/runs/stream"
-_LOG_TAIL_LIMIT = 5000
-_MAX_BUFFER_LINES = 1200
+_PORT = "3000"
+BASE_URL = f"http://127.0.0.1:{_PORT}"
+DOCS_URL = f"{BASE_URL}/docs"
+RUNS_WAIT_URL = f"{BASE_URL}/runs/wait"
+
+_LOG_CHAR_LIMIT = 4096
 
 
 def _read_assistant_id(project_root: pathlib.Path) -> str:
-    cfg = project_root / "langgraph.json"
+    config_path = project_root / "langgraph.json"
     try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
+        data = json.loads(config_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return "agent"
 
     graphs = data.get("graphs") if isinstance(data, dict) else {}
     if isinstance(graphs, dict) and graphs:
-        return next(iter(graphs.keys()))
+        return str(next(iter(graphs.keys())))
     return "agent"
 
 
-def _start_dev_server(project_root: pathlib.Path) -> Tuple[subprocess.Popen, List[str], threading.Lock, threading.Thread]:
-    proc = subprocess.Popen(
-        ["langgraph", "dev"],
+def _start_server(project_root: pathlib.Path) -> Tuple[subprocess.Popen[str], Deque[str], threading.Lock, threading.Thread]:
+    process = subprocess.Popen(
+        ["langgraph", "dev", "--port", _PORT],
         cwd=str(project_root),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1,
-        universal_newlines=True,
     )
 
-    buffer: List[str] = []
+    buffer: Deque[str] = deque()
     lock = threading.Lock()
 
-    def _pump() -> None:
-        if not proc.stdout:
+    def _reader() -> None:
+        if not process.stdout:
             return
-        try:
-            for line in proc.stdout:
-                with lock:
-                    buffer.append(line)
-                    if len(buffer) > _MAX_BUFFER_LINES:
-                        del buffer[0 : len(buffer) - _MAX_BUFFER_LINES]
-        except Exception:
-            pass
+        for line in process.stdout:
+            with lock:
+                buffer.append(line)
+                while sum(len(item) for item in buffer) > _LOG_CHAR_LIMIT * 2:
+                    buffer.popleft()
 
-    thread = threading.Thread(target=_pump, name="langgraph-dev-log-reader", daemon=True)
+    thread = threading.Thread(target=_reader, name="langgraph-dev-final-check", daemon=True)
     thread.start()
-    return proc, buffer, lock, thread
+    return process, buffer, lock, thread
 
 
-def _logs_tail(buffer: Iterable[str], lock: threading.Lock, limit: int = _LOG_TAIL_LIMIT) -> str:
+def _logs_tail(buffer: Iterable[str], lock: threading.Lock, limit: int = _LOG_CHAR_LIMIT) -> str:
     with lock:
-        joined = "".join(buffer)
-    if len(joined) > limit:
-        return joined[-limit:]
-    return joined
+        combined = "".join(buffer)
+    if len(combined) > limit:
+        return combined[-limit:]
+    return combined
 
 
-def _wait_server_ready(timeout_s: float = 30.0) -> bool:
+def _wait_for_docs(timeout_s: float = 30.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            resp = requests.get(DOCS_URL, timeout=2)
-            if resp.status_code < 500:
+            response = requests.get(DOCS_URL, timeout=2)
+            if response.status_code < 500:
                 return True
-        except Exception:
+        except requests.RequestException:
             pass
         time.sleep(0.5)
     return False
-
-
-def _contains_token(payload: Any, token: str) -> bool:
-    upper_token = token.upper()
-
-    def _walk(value: Any) -> bool:
-        if isinstance(value, str):
-            return upper_token in value.upper()
-        if isinstance(value, dict):
-            for item in value.values():
-                if _walk(item):
-                    return True
-            return False
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                if _walk(item):
-                    return True
-        return False
-
-    return _walk(payload)
-
-
-def _snippet_from_json(data: Any, fallback: str, limit: int = 200) -> str:
-    try:
-        rendered = json.dumps(data, ensure_ascii=False)
-    except TypeError:
-        rendered = fallback
-    if not rendered:
-        rendered = fallback
-    return rendered[:limit]
 
 
 def _headers_with_optional_key() -> Dict[str, str]:
@@ -122,135 +88,113 @@ def _headers_with_optional_key() -> Dict[str, str]:
     return headers
 
 
-def _terminate_process(proc: subprocess.Popen, thread: threading.Thread) -> None:
-    with contextlib.suppress(Exception):
-        if proc.poll() is None:
-            proc.terminate()
+def _terminate_process(process: subprocess.Popen[str] | None, thread: threading.Thread | None) -> None:
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
             try:
-                proc.wait(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-    with contextlib.suppress(Exception):
-        if proc.stdout:
-            proc.stdout.close()
-    if thread.is_alive():
+                process.kill()
+                process.wait(timeout=5)
+    except Exception:
+        with contextlib.suppress(Exception):
+            process.kill()
+    finally:
+        if process.stdout:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+    if thread and thread.is_alive():
         thread.join(timeout=1)
+
+
+def _response_contains_pong(text: str) -> bool:
+    return "PONG" in text.upper()
 
 
 def final_check_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scaffold = state.get("scaffold") or {}
     project_root_str = scaffold.get("project_root")
     if not project_root_str:
-        state["final_check"] = {
-            "ok": False,
-            "phase": "start",
-            "error": "missing project_root",
-            "logs_tail": "",
-            "assistant_id": None,
-        }
+        state["final_check"] = {"ok": False, "phase": "start", "error": "missing project_root"}
         return state
 
-    project_root = pathlib.Path(project_root_str)
-    assistant_id = None
+    project_root = pathlib.Path(str(project_root_str))
+    assistant_id = _read_assistant_id(project_root)
+
     try:
-        proc, log_buffer, lock, reader_thread = _start_dev_server(project_root)
+        process, buffer, lock, thread = _start_server(project_root)
     except OSError as exc:
         state["final_check"] = {
             "ok": False,
             "phase": "start",
             "error": f"failed to launch langgraph dev: {exc}",
-            "logs_tail": "",
             "assistant_id": assistant_id,
         }
         return state
 
     try:
-        assistant_id = _read_assistant_id(project_root)
-        if not _wait_server_ready():
-            tail = _logs_tail(log_buffer, lock)
+        if not _wait_for_docs():
             state["final_check"] = {
                 "ok": False,
                 "phase": "start",
                 "error": "server not ready",
-                "logs_tail": tail,
                 "assistant_id": assistant_id,
+                "logs_tail": _logs_tail(buffer, lock),
             }
             return state
 
-        probe_prompt = (state.get("acceptance") or {}).get("probe_prompt") or "Reply with the single word: PONG"
-        headers = _headers_with_optional_key()
+        probe = (state.get("acceptance") or {}).get("probe_prompt") or "Reply with the single word: PONG"
         payload = {
             "assistant_id": assistant_id,
-            "input": {"messages": [{"role": "human", "content": probe_prompt}]},
+            "input": {"messages": [{"role": "human", "content": probe}]},
         }
+        headers = _headers_with_optional_key()
 
         try:
             response = requests.post(RUNS_WAIT_URL, json=payload, headers=headers, timeout=30)
         except requests.RequestException as exc:
-            tail = _logs_tail(log_buffer, lock)
             state["final_check"] = {
                 "ok": False,
                 "phase": "probe",
                 "assistant_id": assistant_id,
                 "error": f"runs/wait request failed: {exc}",
-                "logs_tail": tail,
-                "used_api_key": "x-api-key" in headers,
+                "logs_tail": _logs_tail(buffer, lock),
             }
             return state
 
-        snippet_source = response.text
-        json_payload: Any
-        try:
-            json_payload = response.json()
-            snippet = _snippet_from_json(json_payload, snippet_source)
-        except ValueError:
-            json_payload = None
-            snippet = snippet_source[:200]
-
-        pong_ok = False
-        if response.status_code < 400 and json_payload is not None:
-            pong_ok = _contains_token(json_payload, "PONG")
-        elif response.status_code < 400:
-            pong_ok = "PONG" in snippet.upper()
-
-        result: Dict[str, Any]
-        if pong_ok:
-            result = {
-                "ok": True,
-                "phase": "probe",
-                "assistant_id": assistant_id,
-                "snippet": snippet,
-                "status": response.status_code,
-                "used_api_key": "x-api-key" in headers,
-            }
-        else:
-            tail = _logs_tail(log_buffer, lock)
-            error_msg = "missing expected response token" if response.status_code < 400 else f"HTTP {response.status_code}"
-            result = {
-                "ok": False,
-                "phase": "probe",
-                "assistant_id": assistant_id,
-                "error": error_msg,
-                "status": response.status_code,
-                "response_snippet": snippet,
-                "logs_tail": tail,
-                "used_api_key": "x-api-key" in headers,
-            }
+        body_text = response.text
+        snippet = body_text[:400]
+        success = response.status_code < 400 and _response_contains_pong(body_text)
+        result = {
+            "ok": bool(success),
+            "phase": "probe",
+            "assistant_id": assistant_id,
+            "status": response.status_code,
+            "snippet": snippet,
+        }
+        if not success:
+            result["error"] = "missing expected response token" if response.status_code < 400 else f"HTTP {response.status_code}"
+            result["logs_tail"] = _logs_tail(buffer, lock)
         state["final_check"] = result
         return state
     finally:
-        _terminate_process(proc, reader_thread)
+        _terminate_process(process, thread)
 
 
 __all__ = [
     "final_check_node",
-    "_read_assistant_id",
-    "_start_dev_server",
-    "_logs_tail",
-    "_wait_server_ready",
+    "BASE_URL",
+    "DOCS_URL",
+    "RUNS_WAIT_URL",
     "_headers_with_optional_key",
-    "_contains_token",
+    "_logs_tail",
+    "_read_assistant_id",
+    "_start_server",
     "_terminate_process",
-    "RUNS_STREAM_URL",
+    "_wait_for_docs",
 ]

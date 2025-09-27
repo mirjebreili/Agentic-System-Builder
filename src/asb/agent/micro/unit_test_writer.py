@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
+
+import re
 
 from asb.utils.fileops import atomic_write, ensure_dir
 
@@ -31,22 +33,12 @@ def _load(name: str) -> Callable[[AppState], AppState]:
 """
 
 
-CONFTEST_TEMPLATE = """from __future__ import annotations
+CONFTEST_TEMPLATE = """import sys, pathlib
 
-import sys
-from pathlib import Path
-
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if src.is_dir():
-        path = str(src)
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-
-_ensure_src_on_path()
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 """
 
 
@@ -67,18 +59,31 @@ def _determine_project_root(state: Dict[str, Any]) -> Path | None:
     return None
 
 
+def _norm_node(data: Dict[str, Any]) -> Dict[str, Any]:
+    name = (data.get("name") or data.get("node_id") or data.get("id") or "").strip()
+    if not name:
+        base = (data.get("responsibility") or "node").split()[0]
+        name = re.sub(r"[^A-Za-z0-9_]+", "_", base).strip("_") or "node"
+    name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
+    data["name"] = name
+    return data
+
+
 def _iter_plan_modules(state: Dict[str, Any]) -> List[str]:
     plan = state.get("plan")
     modules: List[str] = []
     if isinstance(plan, dict):
         nodes = plan.get("nodes")
         if isinstance(nodes, list):
+            seen: set[str] = set()
             for entry in nodes:
-                if isinstance(entry, dict):
-                    identifier = entry.get("id") or entry.get("name") or entry.get("label")
-                    if isinstance(identifier, str) and identifier.strip():
-                        sanitized = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in identifier)
-                        modules.append(sanitized.strip("_") or "node")
+                if not isinstance(entry, dict):
+                    continue
+                normalized = _norm_node(dict(entry))
+                name = normalized.get("name")
+                if isinstance(name, str) and name and name not in seen:
+                    modules.append(name)
+                    seen.add(name)
     return modules
 
 

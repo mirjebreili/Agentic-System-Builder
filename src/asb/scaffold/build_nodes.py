@@ -17,6 +17,89 @@ SCAFFOLD_BASE_PATH_KEY = "_scaffold_base_path"
 SCAFFOLD_ROOT_KEY = "_scaffold_root_path"
 
 
+HEADLINE_NODE_SOURCE = """from __future__ import annotations
+
+from typing import Any, Dict, List
+
+
+def _extract_text(state: Dict[str, Any]) -> str:
+    if not isinstance(state, dict):
+        return ""
+    candidates: List[str] = []
+    for key in ("text", "input", "content", "prompt", "body"):
+        value = state.get(key)
+        if isinstance(value, str) and value.strip():
+            candidates.append(value.strip())
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    candidates.append(item.strip())
+    messages = state.get("messages")
+    if isinstance(messages, list):
+        for item in messages:
+            if isinstance(item, dict):
+                content = item.get("content")
+                if isinstance(content, str) and content.strip():
+                    candidates.append(content.strip())
+    return " ".join(candidates).strip()
+
+
+def _slice_headlines(text: str) -> List[str]:
+    import math
+    import re
+
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    sentences = [segment.strip() for segment in re.split(r"[.!?\\n]+", cleaned) if segment.strip()]
+    segments: List[str] = []
+    for sentence in sentences:
+        segments.append(sentence[:120])
+        if len(segments) == 5:
+            break
+    if len(segments) >= 3:
+        return segments[:5]
+    words = cleaned.split()
+    if not words:
+        return segments
+    target = max(3, min(5, math.ceil(len(words) / 8) or 3))
+    chunk_size = max(1, math.ceil(len(words) / target))
+    segments = []
+    for start in range(0, len(words), chunk_size):
+        chunk = " ".join(words[start : start + chunk_size]).strip()
+        if chunk:
+            segments.append(chunk[:120])
+        if len(segments) == 5:
+            break
+    while segments and len(segments) < 3:
+        segments.append(segments[-1])
+    return segments[:5]
+
+
+def node_headline_generator(state: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    working: Dict[str, Any] = dict(state or {})
+    headlines = _slice_headlines(_extract_text(working))
+    if not headlines:
+        headlines = ["No content available"] * 3
+    working["headlines"] = headlines[:5]
+    messages = working.get("messages")
+    if not isinstance(messages, list):
+        working["messages"] = []
+    return working
+
+
+__all__ = ["node_headline_generator"]
+"""
+
+
+def _ensure_headline_generator_module(agent_dir: Path, *, overwrite: bool = False) -> Path:
+    ensure_dir(agent_dir)
+    target = agent_dir / "headline_generator.py"
+    if overwrite or not target.exists():
+        atomic_write(target, HEADLINE_NODE_SOURCE)
+    return target
+
+
 def _get_base_path(state: Dict[str, Any]) -> Path:
     base_path = state.get(SCAFFOLD_BASE_PATH_KEY)
     if base_path is None:
@@ -363,6 +446,16 @@ def write_node_modules(
         ensure_dir(agent_dir)
 
         architecture_plan = state.get("_scaffold_architecture_plan") or {}
+        if not isinstance(architecture_plan, dict):
+            architecture_plan = {}
+        ensure_headline_fallback = False
+        if not architecture_plan.get("graph_structure"):
+            architecture_plan = dict(architecture_plan)
+            architecture_plan["graph_structure"] = [
+                {"name": "headline_generator", "responsibility": "Generate headlines"}
+            ]
+            state["_scaffold_architecture_plan"] = architecture_plan
+            ensure_headline_fallback = True
         user_goal = state.get("_scaffold_user_goal") or ""
         requires_self_correction = False
         if isinstance(architecture_plan, dict):
@@ -426,6 +519,11 @@ def write_node_modules(
             )
 
         node_definitions = _build_node_definitions(agent_dir, node_specs)
+        if ensure_headline_fallback:
+            _ensure_headline_generator_module(agent_dir, overwrite=True)
+            for definition in node_definitions:
+                if definition.get("module") == "headline_generator":
+                    definition["callable"] = "node_headline_generator"
     except Exception as exc:
         _update_build_report(state, node_name, success=False, errors=[str(exc)])
         raise

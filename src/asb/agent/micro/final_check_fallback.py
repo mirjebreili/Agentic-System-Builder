@@ -1,269 +1,167 @@
 from __future__ import annotations
 
-import json
 import pathlib
-import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import requests
 
 from .final_check import (
-    DEFAULT_URL,
-    RUNS_STREAM_URL,
-    _contains_token,
+    BASE_URL,
     _headers_with_optional_key,
     _logs_tail,
     _read_assistant_id,
-    _start_dev_server,
+    _start_server,
     _terminate_process,
-    _wait_server_ready,
+    _wait_for_docs,
 )
 
-_AGENT_CARD_PATH = ".well-known/agent-card.json"
-_STREAM_TIMEOUT_S = 10.0
-_RESPONSE_CAPTURE_LIMIT = 5000
-
-
-def _collect_stream_snippet(response: requests.Response) -> List[str]:
-    snippet_parts: List[str] = []
-    start = time.time()
-    for line in response.iter_lines(decode_unicode=True):
-        if time.time() - start > _STREAM_TIMEOUT_S:
-            break
-        if not line:
-            continue
-        snippet_parts.append(line)
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            payload = line
-        if isinstance(payload, (dict, list)):
-            if _contains_token(payload, "PONG"):
-                break
-        elif isinstance(payload, str) and "PONG" in payload.upper():
-            break
-    return snippet_parts
+_THREADS_URL = f"{BASE_URL}/threads"
 
 
 def final_check_fallback_node(state: Dict[str, Any]) -> Dict[str, Any]:
     current = dict(state.get("final_check") or {})
-    if current.get("ok") is True:
+    if current.get("ok"):
         state["final_check"] = current
         return state
 
     scaffold = state.get("scaffold") or {}
     project_root_str = scaffold.get("project_root")
     if not project_root_str:
-        current.update(
-            {
-                "ok": False,
-                "phase": "fallback",
-                "error": "missing project_root",
-                "logs_tail": current.get("logs_tail", ""),
-                "assistant_id": current.get("assistant_id"),
-            }
-        )
+        current.update({"ok": False, "phase": "fallback-start", "error": "missing project_root"})
         state["final_check"] = current
         return state
 
-    project_root = pathlib.Path(project_root_str)
-    proc = None
-    log_buffer: List[str] = []
-    lock = None
-    reader_thread = None
+    project_root = pathlib.Path(str(project_root_str))
+    assistant_id = current.get("assistant_id") or _read_assistant_id(project_root)
 
     try:
-        proc, log_buffer, lock, reader_thread = _start_dev_server(project_root)
+        process, buffer, lock, thread = _start_server(project_root)
     except OSError as exc:
         current.update(
             {
                 "ok": False,
-                "phase": "start",
+                "phase": "fallback-start",
+                "assistant_id": assistant_id,
                 "error": f"failed to launch langgraph dev: {exc}",
-                "logs_tail": current.get("logs_tail", ""),
-                "assistant_id": current.get("assistant_id"),
             }
         )
         state["final_check"] = current
         return state
 
     try:
-        if not _wait_server_ready():
-            tail = _logs_tail(log_buffer, lock)
+        if not _wait_for_docs():
             current.update(
                 {
                     "ok": False,
-                    "phase": "start",
+                    "phase": "fallback-start",
+                    "assistant_id": assistant_id,
                     "error": "server not ready",
-                    "logs_tail": tail,
-                    "assistant_id": current.get("assistant_id") or _read_assistant_id(project_root),
+                    "logs_tail": _logs_tail(buffer, lock),
                 }
             )
             state["final_check"] = current
             return state
 
-        assistant_id = current.get("assistant_id") or _read_assistant_id(project_root)
         headers = _headers_with_optional_key()
-        used_api_key = "x-api-key" in headers
-        card_url = f"{DEFAULT_URL}/{_AGENT_CARD_PATH}"
-        card_errors: Dict[str, str] = {}
+        probe = (state.get("acceptance") or {}).get("probe_prompt") or "Reply with the single word: PONG"
 
         try:
-            primary = requests.get(
-                card_url,
-                params={"assistant_id": assistant_id},
-                headers=headers,
-                timeout=10,
-            )
+            thread_response = requests.post(_THREADS_URL, headers=headers, timeout=30)
         except requests.RequestException as exc:
-            tail = _logs_tail(log_buffer, lock)
             current.update(
                 {
                     "ok": False,
                     "phase": "fallback",
                     "assistant_id": assistant_id,
-                    "error": f"agent-card fetch failed: {exc}",
-                    "logs_tail": tail,
-                    "used_api_key": used_api_key,
+                    "error": f"thread creation failed: {exc}",
+                    "logs_tail": _logs_tail(buffer, lock),
                 }
             )
             state["final_check"] = current
             return state
 
-        if not primary.ok:
-            card_errors[str(assistant_id)] = primary.text[:200]
-            try:
-                secondary = requests.get(
-                    card_url,
-                    params={"assistant_id": "agent"},
-                    headers=headers,
-                    timeout=10,
-                )
-            except requests.RequestException as exc:
-                tail = _logs_tail(log_buffer, lock)
-                current.update(
-                    {
-                        "ok": False,
-                        "phase": "fallback",
-                        "assistant_id": assistant_id,
-                        "error": f"agent-card fallback failed: {exc}",
-                        "logs_tail": tail,
-                        "card_errors": card_errors,
-                        "used_api_key": used_api_key,
-                    }
-                )
-                state["final_check"] = current
-                return state
+        thread_body = thread_response.text
+        if thread_response.status_code >= 400:
+            current.update(
+                {
+                    "ok": False,
+                    "phase": "fallback",
+                    "assistant_id": assistant_id,
+                    "status": thread_response.status_code,
+                    "snippet": thread_body[:400],
+                    "error": "thread creation returned error",
+                    "logs_tail": _logs_tail(buffer, lock),
+                }
+            )
+            state["final_check"] = current
+            return state
 
-            if secondary.ok:
-                assistant_id = "agent"
-            else:
-                card_errors["agent"] = secondary.text[:200]
+        try:
+            thread_payload = thread_response.json()
+        except ValueError:
+            thread_payload = {}
+        thread_id = (
+            thread_payload.get("id")
+            or thread_payload.get("thread_id")
+            or thread_payload.get("data", {}).get("id")
+        )
+        if not thread_id:
+            current.update(
+                {
+                    "ok": False,
+                    "phase": "fallback",
+                    "assistant_id": assistant_id,
+                    "snippet": thread_body[:400],
+                    "error": "thread creation missing identifier",
+                    "logs_tail": _logs_tail(buffer, lock),
+                }
+            )
+            state["final_check"] = current
+            return state
 
-        probe_prompt = (state.get("acceptance") or {}).get("probe_prompt") or "Reply with the single word: PONG"
         payload = {
             "assistant_id": assistant_id,
-            "input": {"messages": [{"role": "human", "content": probe_prompt}]},
-            "stream_mode": "messages-tuple",
+            "input": {"messages": [{"role": "human", "content": probe}]},
         }
 
         try:
             response = requests.post(
-                RUNS_STREAM_URL,
+                f"{_THREADS_URL}/{thread_id}/runs/wait",
                 json=payload,
                 headers=headers,
-                timeout=_STREAM_TIMEOUT_S,
-                stream=True,
+                timeout=30,
             )
         except requests.RequestException as exc:
-            tail = _logs_tail(log_buffer, lock)
             current.update(
                 {
                     "ok": False,
                     "phase": "fallback",
                     "assistant_id": assistant_id,
-                    "error": f"runs/stream request failed: {exc}",
-                    "logs_tail": tail,
-                    "card_errors": card_errors or None,
-                    "used_api_key": used_api_key,
+                    "error": f"threaded runs/wait failed: {exc}",
+                    "logs_tail": _logs_tail(buffer, lock),
                 }
             )
             state["final_check"] = current
             return state
 
-        captured_body: List[str] = []
-        if response.status_code >= 400:
-            for chunk in response.iter_content(chunk_size=512, decode_unicode=True):
-                if not chunk:
-                    continue
-                captured_body.append(chunk)
-                if sum(len(part) for part in captured_body) > _RESPONSE_CAPTURE_LIMIT:
-                    break
-            tail = _logs_tail(log_buffer, lock)
-            response.close()
-            current.update(
-                {
-                    "ok": False,
-                    "phase": "fallback",
-                    "assistant_id": assistant_id,
-                    "error": f"runs/stream HTTP {response.status_code}",
-                    "logs_tail": tail,
-                    "response_body": "".join(captured_body)[:200],
-                    "card_errors": card_errors or None,
-                    "used_api_key": used_api_key,
-                }
-            )
-            state["final_check"] = current
-            return state
-
-        snippet_parts = _collect_stream_snippet(response)
-        response.close()
-        snippet = "\n".join(snippet_parts)[:200]
-
-        success = False
-        for part in snippet_parts:
-            try:
-                parsed: Any = json.loads(part)
-            except json.JSONDecodeError:
-                parsed = part
-            if isinstance(parsed, (dict, list)) and _contains_token(parsed, "PONG"):
-                success = True
-                break
-            if isinstance(parsed, str) and "PONG" in parsed.upper():
-                success = True
-                break
-
-        if success:
-            current.update(
-                {
-                    "ok": True,
-                    "phase": "fallback",
-                    "assistant_id": assistant_id,
-                    "snippet": snippet,
-                    "card_errors": card_errors or None,
-                    "used_api_key": used_api_key,
-                }
-            )
+        body = response.text
+        snippet = body[:400]
+        success = response.status_code < 400 and "PONG" in body.upper()
+        result = {
+            "ok": bool(success),
+            "phase": "fallback",
+            "assistant_id": assistant_id,
+            "status": response.status_code,
+            "snippet": snippet,
+        }
+        if not success:
+            result["logs_tail"] = _logs_tail(buffer, lock)
         else:
-            tail = _logs_tail(log_buffer, lock)
-            current.update(
-                {
-                    "ok": False,
-                    "phase": "fallback",
-                    "assistant_id": assistant_id,
-                    "error": "streaming probe missing expected token",
-                    "logs_tail": tail,
-                    "response_snippet": snippet,
-                    "card_errors": card_errors or None,
-                    "used_api_key": used_api_key,
-                }
-            )
-
-        state["final_check"] = current
+            result["thread_id"] = thread_id
+        state["final_check"] = result
         return state
     finally:
-        if proc is not None and reader_thread is not None:
-            _terminate_process(proc, reader_thread)
+        _terminate_process(process, thread)
 
 
 __all__ = ["final_check_fallback_node"]
