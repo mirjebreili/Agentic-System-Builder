@@ -31,19 +31,19 @@ def _iter_node_modules(agent_dir: Path):
 
 def _implement_logic(source: str, module_name: str) -> str:
     replacement = (
-        "    response = AIMessage(content=\"{name} step completed.\")\n"
+        f"    response = AIMessage(content=\"{module_name} step completed.\")\n"
         "    updated_messages = messages + [response]\n"
         "    updated_state = dict(state)\n"
         "    scratch = dict(updated_state.get(\"scratch\") or {})\n"
         "    completed = list(scratch.get(\"completed_nodes\") or [])\n"
         f"    if \"{module_name}\" not in completed:\n"
-        "        completed.append(\"{module_name}\")\n"
+        f"        completed.append(\"{module_name}\")\n"
         "    scratch[\"completed_nodes\"] = completed\n"
-        "    scratch[\"last_node\"] = \"{module_name}\"\n"
+        f"    scratch[\"last_node\"] = \"{module_name}\"\n"
         "    updated_state[\"scratch\"] = scratch\n"
         "    updated_state[\"messages\"] = updated_messages\n"
         "    return updated_state\n"
-    ).format(name=module_name)
+    )
     return source.replace(_SENTINEL, replacement)
 
 

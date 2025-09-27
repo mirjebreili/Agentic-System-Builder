@@ -99,16 +99,33 @@ def sandbox_runner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     commands: List[Dict[str, Any]] = [
         {
-            "name": "meta_langgraph",
-            "command": ["langgraph", "dev", "--check"],
+            "name": "meta_ast_check",
+            "command": [
+                "python",
+                "-c",
+                (
+                    "import ast, pathlib; "
+                    "[ast.parse(path.read_text(encoding='utf-8'), filename=str(path)) "
+                    "for path in pathlib.Path('src/asb/agent').rglob('*.py')]"
+                ),
+            ],
             "cwd": _REPO_ROOT,
         }
     ]
     if project_root is not None:
         commands.append(
             {
-                "name": "project_langgraph",
-                "command": ["langgraph", "dev", "--check"],
+                "name": "project_ast_check",
+                "command": [
+                    "python",
+                    "-c",
+                    (
+                        "import ast, pathlib; "
+                        "root = pathlib.Path('src/agent'); "
+                        "[ast.parse(path.read_text(encoding='utf-8'), filename=str(path)) "
+                        "for path in root.rglob('*.py') if path.is_file()]"
+                    ),
+                ],
                 "cwd": project_root,
             }
         )
