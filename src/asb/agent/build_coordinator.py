@@ -11,6 +11,8 @@ from asb.agent.micro import (
     context_collector_node,
     critic_judge_node,
     diff_patcher_node,
+    final_check_fallback_node,
+    final_check_node,
     import_resolver_node,
     logic_implementor_node,
     sandbox_runner_node,
@@ -154,6 +156,23 @@ def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
         phase="sandbox",
     )
     if sandbox_ok and _sandbox_success(working_state):
+        working_state, _ = _run_step(
+            working_state,
+            name="final_check",
+            func=final_check_node,
+            trace=trace,
+            attempt=attempt,
+            phase="finalize",
+        )
+        if not (working_state.get("final_check") or {}).get("ok"):
+            working_state, _ = _run_step(
+                working_state,
+                name="final_check_fallback",
+                func=final_check_fallback_node,
+                trace=trace,
+                attempt=attempt,
+                phase="finalize",
+            )
         working_state = report(working_state)
         working_state["coordinator_decision"] = "proceed"
         working_state["next_action"] = "scaffold"
@@ -184,6 +203,23 @@ def coordinate_build(state: Dict[str, Any]) -> Dict[str, Any]:
             phase=f"sandbox_retry_{repair_attempt}",
         )
         if sandbox_ok and _sandbox_success(working_state):
+            working_state, _ = _run_step(
+                working_state,
+                name=f"final_check_retry_{repair_attempt}",
+                func=final_check_node,
+                trace=trace,
+                attempt=attempt,
+                phase=f"finalize_retry_{repair_attempt}",
+            )
+            if not (working_state.get("final_check") or {}).get("ok"):
+                working_state, _ = _run_step(
+                    working_state,
+                    name=f"final_check_fallback_retry_{repair_attempt}",
+                    func=final_check_fallback_node,
+                    trace=trace,
+                    attempt=attempt,
+                    phase=f"finalize_retry_{repair_attempt}",
+                )
             working_state = report(working_state)
             working_state["coordinator_decision"] = "proceed"
             working_state["next_action"] = "scaffold"
