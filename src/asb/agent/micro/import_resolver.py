@@ -104,6 +104,26 @@ def _ensure_message_utils(agent_dir: Path) -> None:
         atomic_write(target, _MESSAGE_UTILS_SOURCE)
 
 
+def _normalize_stub_target(agent_dir: Path, target: Path) -> Path:
+    try:
+        relative = target.relative_to(agent_dir)
+    except ValueError:
+        return target
+
+    normalized_parts: list[str] = []
+    for part in relative.parts:
+        if not part:
+            continue
+        if normalized_parts and part == normalized_parts[-1]:
+            continue
+        normalized_parts.append(part)
+
+    if not normalized_parts:
+        return agent_dir
+
+    return agent_dir.joinpath(*normalized_parts)
+
+
 def _normalize_imports_text(source: str) -> tuple[str, bool]:
     updated = source.replace(
         "from asb.utils.message_utils import extract_last_message_content",
@@ -297,11 +317,13 @@ def _resolve_relative_base(module_path: Path, level: int, agent_dir: Path) -> Pa
 
 
 def _register_module_stub(
+    agent_dir: Path,
     module_path: Path,
     alias_names: Iterable[str],
     attribute_stubs: MutableMapping[Path, set[str]],
     module_presence: set[Path],
 ) -> None:
+    module_path = _normalize_stub_target(agent_dir, module_path)
     alias_set = {name for name in alias_names if name and name != "*"}
     if module_path.exists():
         if alias_set:
@@ -438,10 +460,17 @@ def import_resolver_node(state: Dict[str, Any]) -> Dict[str, Any]:
                                 continue
                             target = package_dir / f"{alias_name}.py"
                             ensure_dir(target.parent)
-                            _register_module_stub(target, [], attribute_stubs, module_presence)
+                            _register_module_stub(
+                                agent_dir,
+                                target,
+                                [],
+                                attribute_stubs,
+                                module_presence,
+                            )
                     else:
                         ensure_dir(module_file.parent)
                         _register_module_stub(
+                            agent_dir,
                             module_file,
                             alias_names,
                             attribute_stubs,
@@ -454,7 +483,13 @@ def import_resolver_node(state: Dict[str, Any]) -> Dict[str, Any]:
                             continue
                         target = base / f"{alias_name}.py"
                         ensure_dir(target.parent)
-                        _register_module_stub(target, [], attribute_stubs, module_presence)
+                        _register_module_stub(
+                            agent_dir,
+                            target,
+                            [],
+                            attribute_stubs,
+                            module_presence,
+                        )
 
     created_stub_modules: list[str] = []
 

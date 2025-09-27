@@ -31,6 +31,30 @@ def _load(name: str) -> Callable[[AppState], AppState]:
 """
 
 
+CONFTEST_TEMPLATE = """from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def _ensure_src_on_path() -> None:
+    root = Path(__file__).resolve().parents[1]
+    src = root / "src"
+    if src.is_dir():
+        path = str(src)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+_ensure_src_on_path()
+"""
+
+
+PYTEST_INI_TEMPLATE = """[pytest]
+pythonpath = src
+"""
+
+
 def _determine_project_root(state: Dict[str, Any]) -> Path | None:
     scaffold = state.get("scaffold")
     if isinstance(scaffold, dict):
@@ -94,8 +118,28 @@ def unit_test_writer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     target = tests_dir / "test_nodes.py"
     atomic_write(target, rendered)
 
+    conftest_path = tests_dir / "conftest.py"
+    wrote_conftest = False
+    if not conftest_path.exists():
+        atomic_write(conftest_path, CONFTEST_TEMPLATE)
+        wrote_conftest = True
+
+    pytest_ini_path = project_root / "pytest.ini"
+    wrote_pytest_ini = False
+    if not pytest_ini_path.exists():
+        atomic_write(pytest_ini_path, PYTEST_INI_TEMPLATE)
+        wrote_pytest_ini = True
+
     scratch = dict(working_state.get("scratch") or {})
-    scratch.setdefault("artifacts", {})["tests"] = str(target)
+    artifacts = scratch.setdefault("artifacts", {})
+    tests_artifacts: Dict[str, Any] = {
+        "module": str(target),
+    }
+    if wrote_conftest or conftest_path.exists():
+        tests_artifacts["conftest"] = str(conftest_path)
+    if wrote_pytest_ini or pytest_ini_path.exists():
+        tests_artifacts["pytest_ini"] = str(pytest_ini_path)
+    artifacts["tests"] = tests_artifacts
     working_state["scratch"] = scratch
     return working_state
 
