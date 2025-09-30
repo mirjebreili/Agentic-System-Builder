@@ -1,60 +1,30 @@
+"""Updated state schema to include package discovery fields."""
 from __future__ import annotations
-
-from typing import Annotated, Any, Dict, List, TypedDict
-import operator
-
-from langchain_core.messages import AnyMessage
-from langgraph.graph import add_messages
+from typing import Dict, List, Any, Optional
+from typing_extensions import TypedDict
+from langchain_core.runnables import RunnableConfig
 
 
-class AppState(TypedDict, total=False):
-    # Conversation/history
-    messages: Annotated[List[AnyMessage], add_messages]
-
-    # Core inputs
-    goal: str
-    input_text: str
+class AppState(TypedDict):
+    # Original fields
+    input: str
+    plan: Optional[str]
+    confidence: Optional[float] 
+    replan: Optional[bool]
     
-    # Planning/architecture
-    plan: Annotated[Dict[str, Any], operator.or_]
-    architecture: Annotated[Dict[str, Any], operator.or_]
-
-    # Execution outputs
-    result: str
-    final_output: str
-
-    # Diagnostics
-    error: str
-    errors: Annotated[List[str], operator.add]
-
-    # Flexible scratchpad for intermediate values
-    scratch: Annotated[Dict[str, Any], operator.or_]
-
-    # Build-time scaffolding diagnostics
-    scaffold: Annotated[Dict[str, Any], operator.or_]
-
-    # Sandbox validation results
-    sandbox: Annotated[Dict[str, Any], operator.or_]
-
-    # Adaptive improvement metadata
-    self_correction: Annotated[Dict[str, Any], operator.or_]
-
-    # Advanced reasoning containers
-    tot: Annotated[Dict[str, Any], operator.or_]
-
-
-def update_state_with_circuit_breaker(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Add circuit breaker logic to prevent infinite loops."""
-
-    if "fix_attempts" not in state:
-        state["fix_attempts"] = 0
-
-    if "consecutive_failures" not in state:
-        state["consecutive_failures"] = 0
-
-    if "repair_start_time" not in state:
-        import time
-
-        state["repair_start_time"] = time.time()
-
-    return state
+    # Package discovery fields
+    package_plan: Optional[Dict[str, Any]]
+    search_queries: Optional[List[List[str]]]
+    npm_candidates: Optional[List[Dict[str, Any]]]
+    pypi_candidates: Optional[List[Dict[str, Any]]]
+    total_candidates: Optional[int]
+    ranked_packages: Optional[List[Dict[str, Any]]]
+    capability_groups: Optional[Dict[str, List[Dict[str, Any]]]]
+    ranking_summary: Optional[Dict[str, Any]]
+    integration_code: Optional[str]
+    deployment_guidance: Optional[str] 
+    selected_package_summary: Optional[List[Dict[str, Any]]]
+    integration_stats: Optional[Dict[str, Any]]
+    validation_results: Optional[Dict[str, Any]]
+    replan_reason: Optional[str]
+    final_response: Optional[str]
