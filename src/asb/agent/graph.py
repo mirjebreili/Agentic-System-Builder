@@ -52,6 +52,12 @@ def route_after_review(state: Dict[str, Any]) -> str:
     return "plan_tot" if state.get("replan") else "package_planner"
 
 
+def should_continue_after_finalize(state: Dict[str, Any]) -> str:
+    """Route after finalize - either replan or end."""
+    replan_reason = state.get("replan_reason")
+    return "discover_packages" if replan_reason else "END"
+
+
 def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g = StateGraph(AppState)
     
@@ -99,9 +105,15 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         },
     )
     
-    # Loop back for replanning
-    g.add_edge("finalize", "discover_packages")  # If replanning needed
-    g.add_edge("finalize", END)  # Final completion
+    # Route after finalize based on whether replanning is needed
+    g.add_conditional_edges(
+        "finalize",
+        should_continue_after_finalize,
+        {
+            "discover_packages": "discover_packages",  # Replan needed
+            "END": END,  # Final completion
+        },
+    )
 
     # Checkpointer setup (keep existing logic)
     if running_on_langgraph_api():
