@@ -5,11 +5,14 @@ from typing import Dict, Any, List
 import json
 from langchain_core.runnables import Runnable
 from asb.llm import get_llm
+from asb.utils.message_utils import extract_last_message_content
 
 
 async def package_planner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Creates a detailed plan for solving the problem using discoverable packages."""
     llm: Runnable = get_llm()
+    messages = state.get("messages", [])
+    user_input = extract_last_message_content(messages, "Build a simple application")
     
     prompt = f"""
 You are a senior solutions architect specializing in package-driven development.
@@ -34,7 +37,7 @@ Output your plan as a JSON object with this structure:
     "integration_strategy": "description of how components will work together"
 }}
 
-Objective: {state["input_text"]}
+Objective: {user_input}
 """
     
     response = await llm.ainvoke(prompt)
