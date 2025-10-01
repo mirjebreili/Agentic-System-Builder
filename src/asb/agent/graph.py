@@ -13,10 +13,10 @@ from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
 # New package discovery imports
 from asb.agent.package_planner import package_planner_node
-from asb.agent.package_discoverer import discover_packages_node
-from asb.agent.package_ranker import rank_packages_node
+from asb.package_discoverer import discover_packages_node
+from asb.package_ranker import rank_packages_node
 from asb.agent.package_integrator import integrate_packages_node
-from asb.agent.package_validator import (
+from asb.package_validator import (
     validate_packages_node, 
     should_replan_packages, 
     replan_or_finalize_node
