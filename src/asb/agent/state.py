@@ -1,30 +1,41 @@
-"""Updated state schema to include package discovery fields."""
+"""Core state schema shared across agent nodes."""
+
 from __future__ import annotations
-from typing import Dict, List, Any, Optional
-from typing_extensions import TypedDict
-from langchain_core.runnables import RunnableConfig
+
+import operator
+from typing import Annotated, Any, Dict, List
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph import add_messages
+from typing_extensions import NotRequired, Required, TypedDict
 
 
-class AppState(TypedDict):
-    # Original fields
-    input: str
-    plan: Optional[str]
-    confidence: Optional[float] 
-    replan: Optional[bool]
-    
-    # Package discovery fields
-    package_plan: Optional[Dict[str, Any]]
-    search_queries: Optional[List[List[str]]]
-    npm_candidates: Optional[List[Dict[str, Any]]]
-    pypi_candidates: Optional[List[Dict[str, Any]]]
-    total_candidates: Optional[int]
-    ranked_packages: Optional[List[Dict[str, Any]]]
-    capability_groups: Optional[Dict[str, List[Dict[str, Any]]]]
-    ranking_summary: Optional[Dict[str, Any]]
-    integration_code: Optional[str]
-    deployment_guidance: Optional[str] 
-    selected_package_summary: Optional[List[Dict[str, Any]]]
-    integration_stats: Optional[Dict[str, Any]]
-    validation_results: Optional[Dict[str, Any]]
-    replan_reason: Optional[str]
-    final_response: Optional[str]
+class AppState(TypedDict, total=False):
+    """Normalized agent state tracked throughout the workflow."""
+
+    input_text: Required[str]
+    messages: Annotated[List[AnyMessage], add_messages]
+
+    goal: NotRequired[str]
+    plan: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    architecture: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+
+    result: NotRequired[str]
+    final_output: NotRequired[str]
+
+    error: NotRequired[str]
+    errors: NotRequired[Annotated[List[str], operator.add]]
+
+    scratch: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    scaffold: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    sandbox: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    self_correction: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    tot: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+
+    confidence: NotRequired[float]
+    replan: NotRequired[bool]
+    review: NotRequired[Dict[str, Any]]
+    debug: NotRequired[Annotated[Dict[str, Any], operator.or_]]
+    tests: NotRequired[Dict[str, Any]]
+    report: NotRequired[Dict[str, Any]]
+    final_response: NotRequired[str]
