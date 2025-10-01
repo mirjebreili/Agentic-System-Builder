@@ -10,7 +10,7 @@ from asb.agent import scaffold
 
 
 TEMPLATE_FILES = {
-    "src/config/settings.py": "SETTING = True\n",
+    "src/asb_config/settings.py": "SETTING = True\n",
     "src/asb/llm/client.py": "def get_chat_model():\n    return object()\n",
     "src/asb/agent/state.py": "class AgentState(dict):\n    pass\n",
     "src/asb/agent/prompts_util.py": (
@@ -53,7 +53,7 @@ def test_missing_template_records_missing(tmp_path, monkeypatch):
     result = scaffold.scaffold_project(state)
     project_dir = Path(result["scaffold"]["path"])
     try:
-        expected = tmp_path / "src/config/settings.py"
+        expected = tmp_path / "src/asb_config/settings.py"
         missing = result["scaffold"].get("missing", [])
         assert str(expected) in missing
     finally:
@@ -90,7 +90,7 @@ def test_scaffold_project_generates_expected_files(tmp_path, monkeypatch):
             "src/__init__.py",
             "src/agent/__init__.py",
             "src/llm/__init__.py",
-            "src/config/__init__.py",
+            "src/asb_config/__init__.py",
         ):
             assert (project_dir / package_file).exists()
 

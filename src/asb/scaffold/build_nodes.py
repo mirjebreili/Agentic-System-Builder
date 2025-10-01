@@ -156,7 +156,7 @@ def init_project_structure(state: Dict[str, Any]) -> Path:
             base_path,
             base_path / "prompts",
             base_path / "src" / "agent",
-            base_path / "src" / "config",
+            base_path / "src" / "asb_config",
             base_path / "src" / "llm",
             base_path / "tests",
             base_path / "reports",
@@ -188,7 +188,7 @@ def copy_base_files(state: Dict[str, Any]) -> List[str]:
         raise
 
     files = {
-        "src/config/settings.py": "src/config/settings.py",
+        "src/asb_config/settings.py": "src/asb_config/settings.py",
         "src/asb/llm/client.py": "src/llm/client.py",
         "src/asb/agent/prompts_util.py": "src/agent/prompts_util.py",
     }

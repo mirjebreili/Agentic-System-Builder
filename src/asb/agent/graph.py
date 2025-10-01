@@ -5,8 +5,8 @@ import os
 import sqlite3
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
-import config.settings as s
-from config.settings import SETTINGS_UID
+import asb_config.settings as s
+from asb_config.settings import SETTINGS_UID
 from asb.agent.state import AppState
 from asb.agent.planner import plan_tot
 from asb.agent.confidence import compute_plan_confidence

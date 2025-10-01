@@ -10,7 +10,7 @@ from pathlib import Path
 from asb.agent import scaffold
 
 TEMPLATE_FILES = {
-    "src/config/settings.py": "SETTING = True\n",
+    "src/asb_config/settings.py": "SETTING = True\n",
     "src/asb/llm/client.py": "def get_chat_model():\n    return object()\n",
     "src/asb/agent/state.py": (
         "from __future__ import annotations\n\n"
