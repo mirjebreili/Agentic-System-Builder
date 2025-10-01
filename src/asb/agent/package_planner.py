@@ -34,7 +34,7 @@ Output your plan as a JSON object with this structure:
     "integration_strategy": "description of how components will work together"
 }}
 
-Objective: {state["input"]}
+Objective: {state["input_text"]}
 """
     
     response = await llm.ainvoke(prompt)
