@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict
-from config.settings import get_settings
+from asb_config.settings import get_settings
 
 from asb.utils.message_utils import extract_last_message_content
 
