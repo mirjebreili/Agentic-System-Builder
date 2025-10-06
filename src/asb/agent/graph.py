@@ -12,6 +12,7 @@ from asb.agent.planner import plan_tot
 from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
 from asb.agent.report import report
+from asb.utils.state_preparer import prepare_initial_state
 
 # Keep existing Langfuse setup
 from langfuse.langchain import CallbackHandler
@@ -88,4 +89,42 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     })
 
 
-graph = _make_graph()
+class _AttachmentAwareGraph:
+    """Wrapper that injects attachment content into the initial state."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def _prepare(self, state):
+        return prepare_initial_state(state)
+
+    def invoke(self, state, *args, **kwargs):
+        return self._inner.invoke(self._prepare(state), *args, **kwargs)
+
+    async def ainvoke(self, state, *args, **kwargs):
+        return await self._inner.ainvoke(self._prepare(state), *args, **kwargs)
+
+    def stream(self, state, *args, **kwargs):
+        return self._inner.stream(self._prepare(state), *args, **kwargs)
+
+    async def astream(self, state, *args, **kwargs):
+        async for chunk in self._inner.astream(self._prepare(state), *args, **kwargs):
+            yield chunk
+
+    async def astream_events(self, state, *args, **kwargs):
+        async for event in self._inner.astream_events(self._prepare(state), *args, **kwargs):
+            yield event
+
+    def batch(self, states, *args, **kwargs):
+        prepared = [self._prepare(state) for state in states]
+        return self._inner.batch(prepared, *args, **kwargs)
+
+    async def abatch(self, states, *args, **kwargs):
+        prepared = [self._prepare(state) for state in states]
+        return await self._inner.abatch(prepared, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+graph = _AttachmentAwareGraph(_make_graph())
