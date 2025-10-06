@@ -189,8 +189,15 @@ def safe_message_access(message: Any, field: str, default: Any = "") -> Any:
     return default
 
 
+def normalize_content(value: Any) -> str:
+    """Public wrapper around the internal content normalizer."""
+
+    return _normalize_content(value)
+
+
 __all__ = [
     "extract_last_message_content",
     "extract_user_messages_content",
     "safe_message_access",
+    "normalize_content",
 ]
