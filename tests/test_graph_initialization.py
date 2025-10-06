@@ -150,3 +150,59 @@ def test_make_graph_local_sqlite(monkeypatch, tmp_path):
         assert checkpointer.conn is dummy_conn
     assert connections == {"path": str(db_path), "check_same_thread": False}
     assert created_dirs == [(str(Path(db_path).parent), True)]
+
+
+def test_graph_routes_report_after_review(monkeypatch):
+    _install_langfuse_stub(monkeypatch)
+    import asb.agent.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "running_on_langgraph_api", lambda: False)
+    monkeypatch.setenv("ASB_DEV_SERVER", "1")
+
+    created_graphs = []
+
+    class DummyStateGraph:
+        def __init__(self, *_args, **_kwargs):
+            self.nodes: list[tuple[str, object]] = []
+            self.edges: list[tuple[str, str | object]] = []
+            self.conditional_edges: list[tuple[str, object, dict[str, str]]] = []
+            created_graphs.append(self)
+
+        def add_node(self, name, node):
+            self.nodes.append((name, node))
+
+        def add_edge(self, source, target):
+            self.edges.append((source, target))
+
+        def add_conditional_edges(self, source, fn, mapping):
+            self.conditional_edges.append((source, fn, mapping))
+
+        def compile(self, *, checkpointer=None):  # noqa: D401 - stub
+            self.checkpointer = checkpointer
+            return self
+
+        def with_config(self, config):
+            self.config = config
+            return self
+
+    monkeypatch.setattr(graph_module, "StateGraph", DummyStateGraph)
+
+    result = graph_module._make_graph(path=None)
+
+    assert created_graphs and result is created_graphs[0]
+
+    graph_instance = created_graphs[0]
+    node_names = [name for name, _func in graph_instance.nodes]
+    assert node_names == ["plan_tot", "confidence", "review_plan", "report"]
+    assert (graph_module.START, "plan_tot") in graph_instance.edges
+    assert ("plan_tot", "confidence") in graph_instance.edges
+    assert ("confidence", "review_plan") in graph_instance.edges
+    assert ("report", graph_module.END) in graph_instance.edges
+
+    conditional = [entry for entry in graph_instance.conditional_edges if entry[0] == "review_plan"]
+    assert conditional, "Conditional routing from review_plan should be registered"
+    _source, _router, mapping = conditional[0]
+    assert mapping == {"plan_tot": "plan_tot", "report": "report"}
+    assert graph_module.route_after_review({"replan": True}) == "plan_tot"
+    assert graph_module.route_after_review({"replan": False}) == "report"
+    assert graph_module.route_after_review({}) == "report"

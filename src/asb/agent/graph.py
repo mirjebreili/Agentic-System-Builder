@@ -1,4 +1,4 @@
-"""Updated graph with package discovery pipeline."""
+"""State graph for the agent orchestration flow."""
 from __future__ import annotations
 from typing import Dict, Any
 import os
@@ -11,16 +11,7 @@ from asb.agent.state import AppState
 from asb.agent.planner import plan_tot
 from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
-# New package discovery imports
-from asb.agent.package_planner import package_planner_node
-from asb.package_discoverer import discover_packages_node
-from asb.package_ranker import rank_packages_node
-from asb.agent.package_integrator import integrate_packages_node
-from asb.package_validator import (
-    validate_packages_node, 
-    should_replan_packages, 
-    replan_or_finalize_node
-)
+from asb.agent.report import report
 
 # Keep existing Langfuse setup
 from langfuse.langchain import CallbackHandler
@@ -48,14 +39,8 @@ def running_on_langgraph_api() -> bool:
 
 
 def route_after_review(state: Dict[str, Any]) -> str:
-    """Route after HITL review - either replan or start package discovery."""
-    return "plan_tot" if state.get("replan") else "package_planner"
-
-
-def should_continue_after_finalize(state: Dict[str, Any]) -> str:
-    """Route after finalize - either replan or end."""
-    replan_reason = state.get("replan_reason")
-    return "discover_packages" if replan_reason else "END"
+    """Route after HITL review - either replan or report the plan."""
+    return "plan_tot" if state.get("replan") else "report"
 
 
 def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
@@ -65,14 +50,7 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
     g.add_node("review_plan", review_plan)  # HITL interrupt
-    
-    # New package discovery pipeline
-    g.add_node("package_planner", package_planner_node)
-    g.add_node("discover_packages", discover_packages_node)
-    g.add_node("rank_packages", rank_packages_node)
-    g.add_node("integrate_packages", integrate_packages_node)
-    g.add_node("validate_packages", validate_packages_node)
-    g.add_node("finalize", replan_or_finalize_node)
+    g.add_node("report", report)
 
     # Original flow up to HITL
     g.add_edge(START, "plan_tot")
@@ -85,35 +63,10 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         route_after_review,
         {
             "plan_tot": "plan_tot",           # Replan if needed
-            "package_planner": "package_planner"  # Start package discovery
+            "report": "report"  # Report approved plan
         },
     )
-    
-    # Package discovery pipeline
-    g.add_edge("package_planner", "discover_packages")
-    g.add_edge("discover_packages", "rank_packages")
-    g.add_edge("rank_packages", "integrate_packages")
-    g.add_edge("integrate_packages", "validate_packages")
-    
-    # Validation routing
-    g.add_conditional_edges(
-        "validate_packages",
-        should_replan_packages,
-        {
-            "True": "finalize",   # Replan with stricter criteria
-            "False": "finalize",  # Finalize solution
-        },
-    )
-    
-    # Route after finalize based on whether replanning is needed
-    g.add_conditional_edges(
-        "finalize",
-        should_continue_after_finalize,
-        {
-            "discover_packages": "discover_packages",  # Replan needed
-            "END": END,  # Final completion
-        },
-    )
+    g.add_edge("report", END)
 
     # Checkpointer setup (keep existing logic)
     if running_on_langgraph_api():
