@@ -17,6 +17,7 @@ from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
 from asb.agent.planner import plan_tot
 from asb.agent.report import report
+from asb.agent.state import AppState
 from asb.utils.state_preparer import prepare_initial_state
 
 langfuse = get_client()
@@ -29,7 +30,7 @@ else:
 langfuse_handler = CallbackHandler()
 
 print("### USING settings_v2 FROM:", s.__file__)
-print("### SETTINGS UID:", SETTINGS_UID)
+print("### SETTINGS UID:", s.SETTINGS_UID)
 
 
 def running_on_langgraph_api() -> bool:
