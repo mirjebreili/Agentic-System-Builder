@@ -2,28 +2,28 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List, Literal
 from langchain_core.messages import SystemMessage, HumanMessage
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from asb.agent.prompts_util import find_prompts_dir
 from asb.llm.client import get_chat_model
 from asb.utils.message_utils import extract_last_message_content
 
-class PlanNode(BaseModel):
-    id: str
-    type: str
-    prompt: str | None = None
-    tool: str | None = None
+class Capability(BaseModel):
+    name: str
+    description: str
+    ecosystem_priority: List[Literal["npm", "pypi"]]
+    search_terms: List[str]
+    complexity: Literal["low", "medium", "high"]
+    required: bool = True
 
-class PlanEdge(BaseModel):
-    from_: str = Field(..., alias="from")
-    to: str
-    if_: str | None = Field(None, alias="if")
 
 class Plan(BaseModel):
     goal: str
-    nodes: list[PlanNode]
-    edges: list[PlanEdge]
+    capabilities: List[Capability]
+    architecture_approach: Literal["microservices", "monolithic", "hybrid"]
+    primary_language: Literal["javascript", "python", "mixed"]
+    integration_strategy: str
     confidence: float | None = None
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,14 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     user_goal = extract_last_message_content(messages, "Plan a tiny workflow.")
     K = 3
 
-    sys = SystemMessage(SYSTEM_PROMPT + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
+    sys = SystemMessage(
+        SYSTEM_PROMPT
+        + (
+            f"\nReturn EXACTLY {K} alternative plan JSON objects as a JSON array."
+            " Each plan must follow the schema above, include unique capability"
+            " sets, and must not include any explanatory text."
+        )
+    )
     user = HumanMessage(_render_user_prompt(user_goal))
     resp = llm.invoke([sys, user]).content
 
@@ -75,27 +82,55 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
         except ValidationError:
             continue
     if not valid:
-        valid = [{
-            "goal": user_goal,
-            "nodes":[
-                {"id":"plan","type":"llm","prompt":"Split the task into 2–5 concrete steps."},
-                {"id":"do","type":"llm","prompt":"Execute the next step. When done, write ONLY DONE."},
-                {"id":"finish","type":"llm","prompt":"Summarize briefly."}],
-            "edges":[
-                {"from":"plan","to":"do"},
-                {"from":"do","to":"do","if":"more_steps"},
-                {"from":"do","to":"finish","if":"steps_done"}],
-            "confidence":0.5
-        }]
+        valid = [
+            {
+                "goal": user_goal,
+                "capabilities": [
+                    {
+                        "name": "requirements_analysis",
+                        "description": "Collect requirements and determine package-friendly deliverables.",
+                        "ecosystem_priority": ["npm", "pypi"],
+                        "search_terms": [
+                            "project requirements toolkit",
+                            "npm checklist",
+                            "pypi analyst tools",
+                        ],
+                        "complexity": "low",
+                        "required": True,
+                    },
+                    {
+                        "name": "solution_implementation",
+                        "description": "Assemble key packages to build the requested outcome with minimal glue code.",
+                        "ecosystem_priority": ["pypi", "npm"],
+                        "search_terms": [
+                            "fastapi",
+                            "express",
+                            "automation toolkit",
+                        ],
+                        "complexity": "medium",
+                        "required": True,
+                    },
+                ],
+                "architecture_approach": "monolithic",
+                "primary_language": "python",
+                "integration_strategy": "Coordinate selected packages via a lightweight Python orchestrator.",
+                "confidence": 0.5,
+            }
+        ]
 
     # Judge
     scored: list[tuple[float, str, dict]] = []
     judge = get_chat_model()
     for p in valid:
-        crit = judge.invoke([
-            SystemMessage('Score 0..1 on clarity, coverage, simplicity. Output JSON {"score":x,"reason":""}.'),
-            HumanMessage(json.dumps({"goal": user_goal, "plan": p}, ensure_ascii=False)),
-        ]).content
+        crit = judge.invoke(
+            [
+                SystemMessage(
+                    "Score 0..1 on coverage, ecosystem fit, and clarity."
+                    " Output JSON {\"score\":x,\"reason\":\"...\"}."
+                ),
+                HumanMessage(json.dumps({"goal": user_goal, "plan": p}, ensure_ascii=False)),
+            ]
+        ).content
         try:
             j = json.loads(_extract_json(crit))
             scored.append((float(j.get("score", 0.0)), j.get("reason",""), p))
