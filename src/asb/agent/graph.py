@@ -74,6 +74,9 @@ def _apply_callbacks(graph):
 def _apply_state_preparer(graph):
     """Patch graph execution methods to normalize incoming state."""
 
+    if getattr(graph, "_attachment_preparer_applied", False):
+        return graph
+
     def _prepare(state):
         return prepare_initial_state(state)
 
@@ -138,7 +141,14 @@ def _apply_state_preparer(graph):
 
         graph.abatch = types.MethodType(abatch, graph)
 
+    setattr(graph, "_attachment_preparer_applied", True)
     return graph
+
+
+def _apply_attachment_preparer(graph):
+    """Backward compatible shim for legacy attachment preparer helper."""
+
+    return _apply_state_preparer(graph)
 
 print("### USING settings_v2 FROM:", s.__file__)
 print("### SETTINGS UID:", s.SETTINGS_UID)
