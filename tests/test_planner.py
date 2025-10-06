@@ -14,7 +14,7 @@ def test_plan_tot_uses_fake_model():
     new_state = plan_tot(state)
 
     assert new_state["plan"]["goal"] == "Test goal"
-    assert new_state["plan"]["nodes"][0]["id"] == "plan"
+    assert new_state["plan"]["capabilities"][0]["name"] == "data_acquisition"
     assert "confidence" in new_state["plan"]
 from src.agent.planner import plan_tot as src_plan_tot, Plan
 
@@ -22,7 +22,7 @@ def test_plan_tot_shape():
     state = {"messages":[{"role":"user","content":"Summarize 3 expenses by category."}]}
     out = src_plan_tot(state)
     plan = Plan.model_validate(out["plan"])
-    nodes = [n.id for n in plan.nodes]
-    assert nodes == ["plan","do","finish"]
+    assert len(plan.capabilities) >= 1
+    assert all(c.ecosystem_priority for c in plan.capabilities)
     assert plan.confidence is None or (0.0 <= plan.confidence <= 1.0)
 

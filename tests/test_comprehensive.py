@@ -28,7 +28,23 @@ def test_scaffold_with_real_messages():
     state = {
         "messages": [HumanMessage(content="Create a test app")],
         "goal": "Create a test app",
-        "plan": {"nodes": ["plan", "do", "finish"]},
+        "plan": {
+            "goal": "Create a test app",
+            "capabilities": [
+                {
+                    "name": "ui_scaffolding",
+                    "description": "Select UI component libraries for rapid prototyping.",
+                    "ecosystem_priority": ["npm", "pypi"],
+                    "search_terms": ["react", "chakra ui", "material ui"],
+                    "complexity": "medium",
+                    "required": True,
+                }
+            ],
+            "architecture_approach": "monolithic",
+            "primary_language": "javascript",
+            "integration_strategy": "Use React scaffolding with supporting Python utilities where needed.",
+            "confidence": 0.6,
+        },
         "architecture": {
             "nodes": [
                 {"id": "plan"},

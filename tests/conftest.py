@@ -26,16 +26,27 @@ sys.modules.setdefault("prompt2graph.llm.client", prompt2graph_llm)
 
 _STATIC_PLAN = {
     "goal": "Test goal",
-    "nodes": [
-        {"id": "plan", "type": "llm", "prompt": "step 1"},
-        {"id": "do", "type": "llm", "prompt": "step 2"},
-        {"id": "finish", "type": "llm", "prompt": "step 3"},
+    "capabilities": [
+        {
+            "name": "data_acquisition",
+            "description": "Gather input data from APIs with resilient retry semantics.",
+            "ecosystem_priority": ["pypi", "npm"],
+            "search_terms": ["requests", "httpx", "axios"],
+            "complexity": "medium",
+            "required": True,
+        },
+        {
+            "name": "analysis_pipeline",
+            "description": "Analyze and transform datasets using reliable analytics libraries.",
+            "ecosystem_priority": ["pypi", "npm"],
+            "search_terms": ["pandas", "numpy", "d3"],
+            "complexity": "medium",
+            "required": True,
+        },
     ],
-    "edges": [
-        {"from": "plan", "to": "do"},
-        {"from": "do", "to": "do", "if": "more_steps"},
-        {"from": "do", "to": "finish", "if": "steps_done"},
-    ],
+    "architecture_approach": "monolithic",
+    "primary_language": "python",
+    "integration_strategy": "Coordinate package usage through a Python orchestrator with optional JS helpers.",
     "confidence": 0.9,
 }
 
@@ -101,8 +112,7 @@ class FakeChatModel:
             return FakeResponse(self._architecture_json)
         if "score 0..1" in system_content.lower():
             return FakeResponse('{"score": 1.0, "reason": "looks good"}')
-        if "json array of plan objects" in system_content.lower():
-             # In the ToT planning, we ask for an array of plans
+        if "json array" in system_content.lower() and "plan" in system_content.lower():
             return FakeResponse(f"[{self._plan_json}]")
         return FakeResponse(self._plan_json)
 
