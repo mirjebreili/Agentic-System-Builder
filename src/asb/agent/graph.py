@@ -17,9 +17,7 @@ from asb.agent.confidence import compute_plan_confidence
 from asb.agent.hitl import review_plan
 from asb.agent.planner import plan_tot
 from asb.agent.report import report
-from asb.agent.state import AppState
 from asb.utils.state_preparer import prepare_initial_state
-from asb_config.settings import SETTINGS_UID
 
 langfuse = get_client()
 
@@ -92,72 +90,42 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     })
 
 
-def _apply_attachment_preparer(graph_obj):
-    """Patch a compiled graph so entrypoints prepare initial state attachments."""
+class _AttachmentAwareGraph:
+    """Wrapper that injects attachment content into the initial state."""
 
-    if getattr(graph_obj, "_attachment_preparer_applied", False):
-        return graph_obj
+    def __init__(self, inner):
+        self._inner = inner
 
-    def _prepare_single(args, kwargs):
-        if args:
-            prepared_state = prepare_initial_state(args[0])
-            args = (prepared_state, *args[1:])
-        elif "state" in kwargs:
-            kwargs = dict(kwargs)
-            kwargs["state"] = prepare_initial_state(kwargs["state"])
-        return args, kwargs
+    def _prepare(self, state):
+        return prepare_initial_state(state)
 
-    def _prepare_many(args, kwargs):
-        if args:
-            prepared_states = [prepare_initial_state(state) for state in args[0]]
-            args = (prepared_states, *args[1:])
-        elif "states" in kwargs:
-            kwargs = dict(kwargs)
-            kwargs["states"] = [prepare_initial_state(state) for state in kwargs["states"]]
-        return args, kwargs
+    def invoke(self, state, *args, **kwargs):
+        return self._inner.invoke(self._prepare(state), *args, **kwargs)
 
-    def _wrap_method(name, *, is_async: bool = False, is_batch: bool = False):
-        if not hasattr(graph_obj, name):
-            return
+    async def ainvoke(self, state, *args, **kwargs):
+        return await self._inner.ainvoke(self._prepare(state), *args, **kwargs)
 
-        original = getattr(graph_obj, name)
-        if original is None:
-            return
+    def stream(self, state, *args, **kwargs):
+        return self._inner.stream(self._prepare(state), *args, **kwargs)
 
-        preparer = _prepare_many if is_batch else _prepare_single
+    async def astream(self, state, *args, **kwargs):
+        async for chunk in self._inner.astream(self._prepare(state), *args, **kwargs):
+            yield chunk
 
-        if is_async:
-            async def wrapper(self, *args, **kwargs):
-                args, kwargs = preparer(args, kwargs)
-                return await original(*args, **kwargs)
-        else:
-            def wrapper(self, *args, **kwargs):
-                args, kwargs = preparer(args, kwargs)
-                return original(*args, **kwargs)
+    async def astream_events(self, state, *args, **kwargs):
+        async for event in self._inner.astream_events(self._prepare(state), *args, **kwargs):
+            yield event
 
-        setattr(
-            graph_obj,
-            name,
-            types.MethodType(
-                functools.wraps(original)(wrapper),
-                graph_obj,
-            ),
-        )
+    def batch(self, states, *args, **kwargs):
+        prepared = [self._prepare(state) for state in states]
+        return self._inner.batch(prepared, *args, **kwargs)
 
-    _wrap_method("invoke")
-    _wrap_method("ainvoke", is_async=True)
-    _wrap_method("stream")
-    _wrap_method("astream", is_async=True)
-    _wrap_method("astream_events", is_async=True)
-    _wrap_method("batch", is_batch=True)
-    _wrap_method("abatch", is_async=True, is_batch=True)
+    async def abatch(self, states, *args, **kwargs):
+        prepared = [self._prepare(state) for state in states]
+        return await self._inner.abatch(prepared, *args, **kwargs)
 
-    setattr(graph_obj, "_attachment_preparer_applied", True)
-    return graph_obj
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
 
-def graph_factory():
-    return _apply_attachment_preparer(_make_graph())
-
-
-graph = graph_factory()
+graph = _AttachmentAwareGraph(_make_graph())
