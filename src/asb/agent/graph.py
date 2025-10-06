@@ -1,14 +1,10 @@
 """State graph for the agent orchestration flow."""
 from __future__ import annotations
 
-import functools
 import os
 import sqlite3
 import types
 from typing import Any, Dict
-
-from langfuse import get_client
-from langfuse.langchain import CallbackHandler
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -20,14 +16,129 @@ from asb.agent.report import report
 from asb.agent.state import AppState
 from asb.utils.state_preparer import prepare_initial_state
 
-langfuse = get_client()
+def _init_langfuse_handler():
+    """Best-effort initialization of the Langfuse callback handler."""
 
-if langfuse.auth_check():
-    print("Langfuse client is authenticated and ready!")
-else:
-    print("Authentication failed. Please check your credentials and host.")
+    try:
+        from langfuse import Langfuse  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"Langfuse client is unavailable: {exc}")
+        return None
 
-langfuse_handler = CallbackHandler()
+    try:
+        from langfuse.callback.langchain import (  # type: ignore
+            CallbackHandler as LangfuseCallbackHandler,
+        )
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"Langfuse LangChain callback unavailable: {exc}")
+        return None
+
+    try:
+        client = Langfuse()
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"Failed to initialize Langfuse client: {exc}")
+        return None
+
+    try:
+        if client.auth_check():
+            print("Langfuse client is authenticated and ready!")
+        else:
+            print("Langfuse authentication failed. Please check your credentials and host.")
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"Langfuse authentication check failed: {exc}")
+
+    try:
+        return LangfuseCallbackHandler(client=client)
+    except TypeError:
+        try:
+            return LangfuseCallbackHandler()
+        except Exception as exc:  # pragma: no cover - optional dependency
+            print(f"Langfuse callback initialization failed: {exc}")
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"Langfuse callback initialization failed: {exc}")
+
+    return None
+
+
+_LANGFUSE_HANDLER = _init_langfuse_handler()
+
+
+def _apply_callbacks(graph):
+    """Attach callbacks to a compiled graph when available."""
+
+    if _LANGFUSE_HANDLER:
+        return graph.with_config({"callbacks": [_LANGFUSE_HANDLER]})
+    return graph
+
+
+def _apply_state_preparer(graph):
+    """Patch graph execution methods to normalize incoming state."""
+
+    def _prepare(state):
+        return prepare_initial_state(state)
+
+    if hasattr(graph, "invoke"):
+        original_invoke = graph.invoke
+
+        def invoke(self, state, *args, **kwargs):
+            return original_invoke(_prepare(state), *args, **kwargs)
+
+        graph.invoke = types.MethodType(invoke, graph)
+
+    if hasattr(graph, "ainvoke"):
+        original_ainvoke = graph.ainvoke
+
+        async def ainvoke(self, state, *args, **kwargs):
+            return await original_ainvoke(_prepare(state), *args, **kwargs)
+
+        graph.ainvoke = types.MethodType(ainvoke, graph)
+
+    if hasattr(graph, "stream"):
+        original_stream = graph.stream
+
+        def stream(self, state, *args, **kwargs):
+            for chunk in original_stream(_prepare(state), *args, **kwargs):
+                yield chunk
+
+        graph.stream = types.MethodType(stream, graph)
+
+    if hasattr(graph, "astream"):
+        original_astream = graph.astream
+
+        async def astream(self, state, *args, **kwargs):
+            async for chunk in original_astream(_prepare(state), *args, **kwargs):
+                yield chunk
+
+        graph.astream = types.MethodType(astream, graph)
+
+    if hasattr(graph, "astream_events"):
+        original_astream_events = graph.astream_events
+
+        async def astream_events(self, state, *args, **kwargs):
+            async for event in original_astream_events(_prepare(state), *args, **kwargs):
+                yield event
+
+        graph.astream_events = types.MethodType(astream_events, graph)
+
+    if hasattr(graph, "batch"):
+        original_batch = graph.batch
+
+        def batch(self, states, *args, **kwargs):
+            prepared = [_prepare(state) for state in states]
+            return original_batch(prepared, *args, **kwargs)
+
+        graph.batch = types.MethodType(batch, graph)
+
+    if hasattr(graph, "abatch"):
+        original_abatch = graph.abatch
+
+        async def abatch(self, states, *args, **kwargs):
+            prepared = [_prepare(state) for state in states]
+            return await original_abatch(prepared, *args, **kwargs)
+
+        graph.abatch = types.MethodType(abatch, graph)
+
+    return graph
 
 print("### USING settings_v2 FROM:", s.__file__)
 print("### SETTINGS UID:", s.SETTINGS_UID)
@@ -72,10 +183,11 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
     g.add_edge("report", END)
 
     # Checkpointer setup (keep existing logic)
+    def finalize(compiled):
+        return _apply_state_preparer(_apply_callbacks(compiled))
+
     if running_on_langgraph_api():
-        return g.compile(checkpointer=None).with_config({
-            "callbacks": [langfuse_handler]
-        })
+        return finalize(g.compile(checkpointer=None))
 
     dev_server = os.environ.get("ASB_DEV_SERVER")
     if path and not dev_server:
@@ -84,49 +196,9 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
             os.makedirs(dir_path, exist_ok=True)
         conn = sqlite3.connect(path, check_same_thread=False)
         memory = SqliteSaver(conn)
-        return g.compile(checkpointer=memory)
+        return finalize(g.compile(checkpointer=memory))
 
-    return g.compile().with_config({
-        "callbacks": [langfuse_handler]
-    })
+    return finalize(g.compile())
 
 
-class _AttachmentAwareGraph:
-    """Wrapper that injects attachment content into the initial state."""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def _prepare(self, state):
-        return prepare_initial_state(state)
-
-    def invoke(self, state, *args, **kwargs):
-        return self._inner.invoke(self._prepare(state), *args, **kwargs)
-
-    async def ainvoke(self, state, *args, **kwargs):
-        return await self._inner.ainvoke(self._prepare(state), *args, **kwargs)
-
-    def stream(self, state, *args, **kwargs):
-        return self._inner.stream(self._prepare(state), *args, **kwargs)
-
-    async def astream(self, state, *args, **kwargs):
-        async for chunk in self._inner.astream(self._prepare(state), *args, **kwargs):
-            yield chunk
-
-    async def astream_events(self, state, *args, **kwargs):
-        async for event in self._inner.astream_events(self._prepare(state), *args, **kwargs):
-            yield event
-
-    def batch(self, states, *args, **kwargs):
-        prepared = [self._prepare(state) for state in states]
-        return self._inner.batch(prepared, *args, **kwargs)
-
-    async def abatch(self, states, *args, **kwargs):
-        prepared = [self._prepare(state) for state in states]
-        return await self._inner.abatch(prepared, *args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
-graph = _AttachmentAwareGraph(_make_graph())
+graph = _make_graph()
