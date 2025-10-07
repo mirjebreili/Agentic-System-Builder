@@ -81,6 +81,24 @@ def test_make_graph_langgraph_api(monkeypatch):
     assert compile_kwargs["checkpointer"] is None
 
 
+def test_public_make_graph_wrapper(monkeypatch):
+    import asb.agent.graph as graph_module
+
+    sentinel = object()
+    received: dict[str, object | None] = {}
+
+    def fake_make_graph(*, path=None):
+        received["path"] = path
+        return sentinel
+
+    monkeypatch.setattr(graph_module, "_make_graph", fake_make_graph)
+
+    result = graph_module.make_graph(path="/tmp/db.sqlite")
+
+    assert result is sentinel
+    assert received == {"path": "/tmp/db.sqlite"}
+
+
 def test_make_graph_local_sqlite(monkeypatch, tmp_path):
     _install_langfuse_stub(monkeypatch)
     import asb.agent.graph as graph_module
