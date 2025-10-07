@@ -10,16 +10,14 @@ This MVP **plans only**: it proposes an ordered plugin sequence and pauses at HI
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
-pip install "langgraph-cli[inmem]"
-
-# Check that the graph is valid
-# Note: the --check flag is illustrative; a successful server start confirms validity.
-langgraph dev
-
-# Run the planner, which will pause at the HITL step for user review.
-langgraph dev
+ 1. `pip install -e . "langgraph-cli[inmem]"`
+ 2. `cp .env.example .env` (edit MODEL/URL if needed)
+ 3. `langgraph dev --check`
+ 4. `langgraph dev` (the run pauses at HITL; planner-only)
 ```
+ ## Scope
+ This MVP **plans only**: it proposes an ordered plugin sequence and pauses at **HITL** for approval. It does **not** execute tools, scaffold projects, run self-tests, or generate reports.
+
 
 ## First-message format
 
