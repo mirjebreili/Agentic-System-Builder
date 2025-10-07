@@ -32,11 +32,12 @@ def _io_score(plan: Sequence[str], registry: Registry) -> float:
         if step not in registry:
             return 0.0
 
+    first_tool = registry[plan[0]]
+    first_consumes = set(first_tool.get("metadata", {}).get("consumes", []))
+    if first_consumes:
+        return 0.0
+
     if len(plan) == 1:
-        tool = registry[plan[0]]
-        consumes = set(tool.get("metadata", {}).get("consumes", []))
-        if consumes:
-            return 0.0
         return 1.0
 
     for current_name, next_name in zip(plan, plan[1:]):
