@@ -1,8 +1,6 @@
 {
   "dependencies": ["."],
-  "graphs": { "agent": "asb.agent.graph:graph" },
-  "env": "./.env",
+  "graphs": {"planner": "src.graph.graph:get_graph"},
   "pip_installer": "pip",
-  "pip_config_file": "./pip.conf",
   "python_version": "3.11"
 }
