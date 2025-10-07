@@ -9,11 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
 from ..llm import get_llm
-from ..prompts import (
-    PLANNER_PLAN_FORMAT,
-    PLANNER_SYSTEM_PROMPT,
-    PLANNER_USER_PROMPT_TEMPLATE,
-)
+from ..prompts import PLANNER_PROMPT, SYSTEM_PROMPT
 from ..utils import PlannerState
 
 
@@ -85,14 +81,13 @@ def plan_plugins(state: PlannerState) -> PlannerState:
 
     llm = get_llm()
     available_plugins = _format_available_plugins(state.get("available_plugins", []))
-    prompt = PLANNER_USER_PROMPT_TEMPLATE.format(
-        input_text=state.get("input_text", ""),
-        available_plugins=available_plugins,
-        plan_format=PLANNER_PLAN_FORMAT,
+    prompt = PLANNER_PROMPT.format(
+        user_question=state.get("input_text", ""),
+        plugin_descriptions=available_plugins,
     )
 
     messages = [
-        SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+        SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=prompt),
     ]
 
