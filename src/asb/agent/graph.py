@@ -16,6 +16,8 @@ from asb.agent.report import report
 from asb.agent.state import AppState
 from asb.utils.state_preparer import prepare_initial_state
 
+__all__ = ("make_graph", "graph")
+
 def _init_langfuse_handler():
     """Best-effort initialization of the Langfuse callback handler."""
 
@@ -209,6 +211,17 @@ def _make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
         return finalize(g.compile(checkpointer=memory))
 
     return finalize(g.compile())
+
+
+def make_graph(path: str | None = os.environ.get("ASB_SQLITE_DB_PATH")):
+    """Public wrapper for :func:`_make_graph`.
+
+    Providing a stable public helper keeps documentation and external
+    integrations aligned with the supported API surface while reusing the
+    existing implementation.
+    """
+
+    return _make_graph(path=path)
 
 
 graph = _make_graph()
