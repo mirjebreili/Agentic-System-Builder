@@ -8,7 +8,7 @@ approval before finalising a plan. No external tools are executed.
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip install -e . "langgraph-cli[inmem]"
 langgraph dev
 ```
 
