@@ -1,0 +1,27 @@
+User Input:
+{{ user_goal }}
+
+Task Context:
+{% if "مجموع" in user_goal or "plugin" in user_goal.lower() or "price_" in user_goal %}
+This appears to be a Persian plugin analysis task. The user is asking about data operations that need to be resolved with a sequence of plugins.
+
+Key Indicators:
+- Persian text detected (مجموع, شروع, etc.)
+- Request for data aggregation or key-based operations
+- Plugin-related workflow needed
+
+Focus: Create a detailed plugin analysis plan with Persian language understanding, plugin mapping, and sequence validation.
+{% else %}
+This appears to be a general task that needs step-by-step execution.
+
+Focus: Create a simple plan-execute-finish workflow.
+{% endif %}
+
+Constraints:
+{{ constraints | default("Keep it simple and actionable.") }}
+
+Notes:
+- For Persian plugin tasks: Include Persian analysis, plugin mapping, validation, and summary steps
+- For general tasks: Use 2–5 concrete, testable steps
+- Keep prompts clear and specific to the task type
+- Ensure confidence reflects task complexity

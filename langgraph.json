@@ -1,6 +1,6 @@
 {
-  "dependencies": ["."],
-  "graphs": { "agent": "asb.agent.graph:graph" },
+  "dependencies": ["./src"],
+  "graphs": { "agent": "agents.graph:graph" },
   "env": "./.env",
   "pip_installer": "pip",
   "pip_config_file": "./pip.conf",
