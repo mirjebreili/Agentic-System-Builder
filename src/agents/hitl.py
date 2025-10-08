@@ -1,109 +1,36 @@
-from __future__ import annotations
+from typing import Dict, Any
 
-from pathlib import Path
-from typing import Any, Dict
+def hitl_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    A node that represents the Human-in-the-Loop (HITL) step.
 
-from langgraph.types import interrupt
+    This node prints the plan candidates to the console and then
+    acts as a terminal point for the graph execution. The graph
+    will pause here, returning its current state.
+    """
+    # Correctly access the candidates from the planner_output key in the state
+    planner_output = state.get("planner_output", {})
+    candidates = planner_output.get("candidates", [])
 
-from ..utils.types import PlanCandidate, PlannerState, PlanningResult
+    print("\n--- HUMAN-IN-THE-LOOP (HITL) ---")
+    print("The following plan candidates have been generated:")
 
-_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "hitl.md"
-_HITL_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8").strip()
+    if not candidates:
+        print("No plans to display.")
+    else:
+        for i, cand in enumerate(candidates):
+            confidence = cand.get('confidence', 0)
+            # Format confidence as percentage
+            confidence_str = f"{confidence:.2%}" if isinstance(confidence, float) else "N/A"
 
+            print(f"\nCandidate #{i} (Confidence: {confidence_str})")
+            print(f"  - Plan: {cand.get('plan')}")
+            print(f"  - Rationale: {cand.get('rationale')}")
+            print(f"  - Scores: {cand.get('scores')}")
 
-def _format_candidate(index: int, candidate: PlanCandidate) -> str:
-    plan_chain = " → ".join(candidate.plan)
-    return (
-        f"{index}. Plan: {plan_chain}\n"
-        f"   Rationale: {candidate.rationale}\n"
-        f"   Confidence: {candidate.confidence:.2f} | Raw score: {candidate.raw_score:.4f}"
-    )
+    print("\nGraph execution is paused for user review.")
+    print("To proceed, the user would typically respond with 'APPROVE <index>' or 'REVISE <notes>'.")
+    print("------------------------------------")
 
-
-def _format_summary(result: PlanningResult) -> str:
-    lines = ["Candidate plans:"]
-    for idx, candidate in enumerate(result["candidates"]):
-        lines.append(_format_candidate(idx, candidate))
-    return "\n".join(lines)
-
-
-def _parse_response(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        if "action" in value:
-            action = str(value["action"]).strip().upper()
-            payload = value.get("value") or value.get("plan") or value.get("instructions")
-            return {"action": action, "payload": payload}
-        if "command" in value:
-            action = str(value["command"]).strip().upper()
-            payload = value.get("payload")
-            return {"action": action, "payload": payload}
-
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return {"action": "", "payload": ""}
-        upper = text.upper()
-        if upper.startswith("APPROVE"):
-            parts = text.split(maxsplit=1)
-            payload = parts[1] if len(parts) > 1 else ""
-            return {"action": "APPROVE", "payload": payload}
-        if upper.startswith("REVISE"):
-            parts = text.split(maxsplit=1)
-            payload = parts[1] if len(parts) > 1 else ""
-            return {"action": "REVISE", "payload": payload}
-        return {"action": text.upper(), "payload": text}
-
-    return {"action": "", "payload": value}
-
-
-def perform_hitl(state: PlannerState) -> Dict[str, Any]:
-    result = state.get("planner_result")
-    if not result:
-        return {"hitl_status": "skipped"}
-
-    summary = _format_summary(result)
-    prompt_text = f"{_HITL_PROMPT}\n\n{summary}".strip()
-
-    payload: Dict[str, Any] = {"prompt": prompt_text, "summary": summary}
-
-    while True:
-        response = interrupt(payload)
-        parsed = _parse_response(response)
-        action = parsed.get("action", "").upper()
-
-        if action == "APPROVE":
-            raw_index = str(parsed.get("payload", "")).strip()
-            try:
-                index = int(raw_index)
-            except ValueError:
-                payload = {
-                    "prompt": "Invalid APPROVE index. Reply with APPROVE <index> (e.g., APPROVE 0).",
-                    "summary": summary,
-                }
-                continue
-            if index < 0 or index >= len(result["candidates"]):
-                payload = {
-                    "prompt": f"Index {index} is out of range. Valid options: 0..{len(result['candidates']) - 1}.",
-                    "summary": summary,
-                }
-                continue
-            chosen_candidate = result["candidates"][index]
-            return {
-                "hitl_status": "approved",
-                "approved_plan": list(chosen_candidate.plan),
-                "pending_plan": list(chosen_candidate.plan),
-                "hitl_prompt": prompt_text,
-            }
-
-        if action == "REVISE":
-            feedback = parsed.get("payload", "")
-            return {
-                "hitl_status": "revise",
-                "hitl_feedback": feedback,
-                "hitl_prompt": prompt_text,
-            }
-
-        payload = {
-            "prompt": "Unrecognized response. Please reply with APPROVE <index> or REVISE <notes>.",
-            "summary": summary,
-        }
+    # Pass the state through, making it the final output of the graph.
+    return state
