@@ -48,3 +48,28 @@ This is a minimal scaffold for a LangGraph agent that can be run with `langgraph
       }
     }
     ```
+
+    ## Environment and running with LangGraph
+
+    1. Copy `.env.example` to `.env` and fill in values (if using a real LLM provider):
+
+    ```bash
+    cp .env.example .env
+    # edit .env and set OPENAI_API_KEY if you want real LLM responses
+    ```
+
+    2. Install dependencies (you can use `pyproject.toml` with Poetry or the `requirements.txt`):
+
+    ```bash
+    pip install -r requirements.txt
+    # or with poetry (optional):
+    # poetry install
+    ```
+
+    3. Start the LangGraph development server (project root):
+
+    ```bash
+    langgraph dev
+    ```
+
+    If you want to verify the server from the same machine, run the curl example above or use any HTTP client to POST to `/planner/invoke`.

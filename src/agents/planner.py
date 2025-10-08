@@ -4,12 +4,16 @@ import numpy as np
 from src.utils.types import PlanCandidate, Registry
 from src.utils.scoring import score_plan, softmax_confidences
 from src.llm.provider import get_llm_provider
+from src.settings import settings
 
 def plan_candidates(question: str, registry: Registry, k: int = 3) -> Dict[str, Any]:
     """
     Generates, scores, and ranks k plan candidates.
     """
     llm = get_llm_provider()
+    # Use settings to control ToT branching and gate
+    if settings.TOT_GATE:
+        k = max(k, settings.TOT_BRANCHES)
 
     # 1. Propose k candidate plans using the LLM
     llm_candidates = llm.plan(question, registry, k)
@@ -50,5 +54,12 @@ def plan_candidates(question: str, registry: Registry, k: int = 3) -> Dict[str, 
         # Sort candidates by confidence in descending order
         candidates.sort(key=lambda c: c["confidence"], reverse=True)
         chosen_index = 0  # The top candidate is now at index 0
+
+    # If gating is enabled, optionally filter out candidates below the threshold
+    if settings.TOT_GATE:
+        filtered = [c for c in candidates if c.get("confidence", 0.0) >= settings.PLANNER_CONFIDENCE_THRESHOLD]
+        if filtered:
+            candidates = filtered
+            chosen_index = 0
 
     return {"candidates": candidates, "chosen": chosen_index}

@@ -1,0 +1,16 @@
+[project]
+name = "langgraph-agent-planner"
+version = "0.1.0"
+description = "A minimal LangGraph agent planner scaffold"
+requires-python = ">=3.11"
+
+dependencies = [
+  "langgraph",
+  "pydantic>=2",
+  "httpx",
+  "python-dotenv",
+  "numpy",
+]
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"

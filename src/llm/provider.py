@@ -1,6 +1,13 @@
-import os
 import json
 from typing import Any, Dict, List
+
+from src.settings import settings
+import os
+
+try:
+    import httpx
+except Exception:
+    httpx = None
 
 # A simple fallback for when an API key is not available.
 # This allows the graph to be tested without a live LLM.
@@ -19,36 +26,71 @@ STUB_RESPONSE = {
 
 
 class LLM:
-    def __init__(self, api_key: str = None, base_url: str = None):
-        """
-        A minimal OpenAI-compatible LLM provider.
-        It can be configured with environment variables for the API key and base URL.
-        If no API key is provided, it falls back to a stubbed response.
-        """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_API_BASE_URL")
+    def __init__(self):
+        """A minimal LLM provider wired to project settings."""
+        self.api_key = settings.OPENAI_API_KEY
+        self.base_url = settings.OPENAI_BASE_URL
+        self.model = settings.MODEL
+        self.temperature = settings.TEMPERATURE
 
     def _is_configured(self) -> bool:
         """Check if the LLM provider is configured with an API key."""
-        return self.api_key is not None
+        return bool(self.api_key)
 
     def plan(self, question: str, registry: Dict[str, Any], k: int) -> List[Dict[str, Any]]:
-        """
-        Generates plan candidates using the LLM.
-        If the LLM is not configured, it returns a stubbed response.
-        """
+        """Generates plan candidates using the LLM or the stub if not configured."""
         if not self._is_configured():
             print("LLM not configured, returning stubbed response.")
             return STUB_RESPONSE.get("candidates", [])[:k]
 
-        # In a real implementation, this would make a call to an LLM.
-        # For this task, we will stick to the stubbed response to ensure
-        # the system can run end-to-end without a live model.
-        # This part of the code would be where the `openai` library is used.
-        print("LLM is configured, but for this task, we will use the stub response.")
+        print(f"LLM configured: base_url={self.base_url}, model={self.model}")
+
+        # Guarded HTTP calls: only perform network requests when explicitly allowed.
+        allow_requests = os.getenv("HTTPX_ALLOW_REQUESTS", "0") in ("1", "true", "True")
+        if not allow_requests or httpx is None:
+            print("HTTP requests disabled or httpx not available — returning stubbed response.")
+            return STUB_RESPONSE.get("candidates", [])[:k]
+
+        # Build a simple request payload following an OpenAI-like chat completion schema.
+        payload = {
+            "model": self.model,
+            "temperature": float(self.temperature),
+            "messages": [
+                {"role": "system", "content": "You are an Agent Planner. Output only JSON as specified."},
+                {"role": "user", "content": question},
+            ],
+            "n": 1,
+        }
+
+        try:
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            url = self.base_url.rstrip("/") + "/chat/completions"
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            # Try to locate JSON candidates inside the response; this depends on provider.
+            # We expect the provider to return choices[0].message.content with JSON.
+            choices = data.get("choices") or []
+            if choices:
+                content = choices[0].get("message", {}).get("content") or choices[0].get("text")
+                if content:
+                    # attempt to parse JSON out of the text
+                    try:
+                        parsed = json.loads(content)
+                        return parsed.get("candidates", STUB_RESPONSE.get("candidates", []))[:k]
+                    except Exception:
+                        # fallback: return stub
+                        print("Could not parse candidates from LLM response; falling back to stub.")
+                        return STUB_RESPONSE.get("candidates", [])[:k]
+
+        except Exception as e:
+            print("LLM request failed, falling back to stub:", str(e))
+            return STUB_RESPONSE.get("candidates", [])[:k]
+
         return STUB_RESPONSE.get("candidates", [])[:k]
 
 
 def get_llm_provider() -> LLM:
-    """Factory function to get an instance of the LLM provider."""
     return LLM()

@@ -15,6 +15,8 @@ class GraphState(TypedDict):
     planner_output: Dict[str, Any]
     # Keep track of the current, approved plan.
     current_plan: Optional[List[PlanCandidate]]
+    # Optional user reply to the HITL node (e.g., "APPROVE 0" or "REVISE ...")
+    user_reply: Optional[str]
 
 
 def ingest_first_message(state: GraphState) -> Dict[str, Any]:
@@ -24,7 +26,13 @@ def ingest_first_message(state: GraphState) -> Dict[str, Any]:
     """
     first_message = state["first_message"]
     question = get_question(first_message)
-    return {"question": question, "first_message": first_message}
+    # Preserve optional fields that may be present in the initial invocation
+    result: Dict[str, Any] = {"question": question, "first_message": first_message}
+    if "user_reply" in state:
+        result["user_reply"] = state["user_reply"]
+    if "current_plan" in state:
+        result["current_plan"] = state["current_plan"]
+    return result
 
 
 def build_registry_node(state: GraphState) -> Dict[str, Any]:
@@ -32,7 +40,13 @@ def build_registry_node(state: GraphState) -> Dict[str, Any]:
     Node to build the tool registry from the first message.
     """
     registry = build_registry(state["first_message"])
-    return {"registry": registry}
+    result: Dict[str, Any] = {"registry": registry}
+    # Preserve user_reply/current_plan if present so downstream nodes can act on them
+    if "user_reply" in state:
+        result["user_reply"] = state["user_reply"]
+    if "current_plan" in state:
+        result["current_plan"] = state["current_plan"]
+    return result
 
 
 def planner_node(state: GraphState) -> Dict[str, Any]:
@@ -40,7 +54,13 @@ def planner_node(state: GraphState) -> Dict[str, Any]:
     Node to run the planner agent, generating candidate plans.
     """
     planner_output = plan_candidates(state["question"], state["registry"])
-    return {"planner_output": planner_output}
+    result: Dict[str, Any] = {"planner_output": planner_output}
+    # Forward optional fields
+    if "user_reply" in state:
+        result["user_reply"] = state["user_reply"]
+    if "current_plan" in state:
+        result["current_plan"] = state["current_plan"]
+    return result
 
 
 def get_graph():

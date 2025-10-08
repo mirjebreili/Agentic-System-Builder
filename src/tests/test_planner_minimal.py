@@ -1,4 +1,12 @@
+import os
+import sys
 import pytest
+
+# Ensure the repository root is on sys.path so `from src...` imports work
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from src.graph.graph import get_graph
 
 # This is the example message provided in the task.
@@ -54,3 +62,19 @@ def test_planner_minimal():
     assert "scores" in top_plan
     assert "confidence" in top_plan
     assert top_plan["confidence"] > 0
+
+    # Now simulate a user APPROVE for the top candidate and re-invoke the graph
+    # We provide the user_reply so the HITL node can process the approval.
+    inputs_with_approval = {"first_message": TEST_MESSAGE, "user_reply": "APPROVE 0"}
+
+    final_state_after_approval = app.invoke(inputs_with_approval)
+
+    # After approval, the graph should set `current_plan` in the returned state
+    assert "current_plan" in final_state_after_approval, "current_plan was not set after APPROVE"
+    approved = final_state_after_approval["current_plan"]
+    # approved may be stored as a list of PlanCandidate
+    if isinstance(approved, list):
+        approved_plan = approved[0]
+    else:
+        approved_plan = approved
+    assert approved_plan["plan"] == expected_plan
