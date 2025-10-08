@@ -1,0 +1,26 @@
+# Python cache and temp files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+build/
+dist/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.vscode/
+.idea/
+*.log
+*.tmp
+*.swp
+*.bak
+*.orig
+*.DS_Store
+langgraph.log
+langgraph.json
+*.ipynb_checkpoints

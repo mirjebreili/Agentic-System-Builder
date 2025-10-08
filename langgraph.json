@@ -1,6 +1,0 @@
-{
-  "dependencies": ["."],
-  "graphs": {"planner": "src.graph.graph:get_graph"},
-  "pip_installer": "pip",
-  "python_version": "3.11"
-}
