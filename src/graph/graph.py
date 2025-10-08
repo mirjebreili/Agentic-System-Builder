@@ -1,80 +1,60 @@
-import json
-from langgraph.graph import StatefulGraph, START, END
-from typing import Dict, Any
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Dict, Any
 
-from src.utils.types import GraphState
-from src.llm.provider import call_llm
-from src.tools.adapters.http_based_atlas_read_by_key import METADATA as http_tool_metadata
-from src.tools.adapters.membased_atlas_key_stream_aggregator import METADATA as mem_tool_metadata
+from src.tools.registry import build_registry, get_question
+from src.agents.planner import plan_candidates
+from src.agents.hitl import hitl_node
 
-# Node definitions
+# Define the state for the graph
+class GraphState(TypedDict):
+    first_message: str
+    question: str
+    registry: Dict[str, Any]
+    planner_output: Dict[str, Any]
 
 def ingest_first_message(state: GraphState) -> Dict[str, Any]:
     """
-    The input to the graph is the initial message. LangGraph will place it
-    in the `initial_message` field of the state if the input key matches.
-    This node is a placeholder to start the graph.
+    Node to ingest the first message and extract the question.
+    This is the entry point of the graph.
     """
-    return {}
+    first_message = state["first_message"]
+    question = get_question(first_message)
+    return {"question": question, "first_message": first_message}
 
-
-def build_registry(state: GraphState) -> Dict[str, Any]:
+def build_registry_node(state: GraphState) -> Dict[str, Any]:
     """
-    Builds the tool registry from the available tool metadata.
+    Node to build the tool registry.
     """
-    registry = {
-        http_tool_metadata["name"]: http_tool_metadata,
-        mem_tool_metadata["name"]: mem_tool_metadata,
-    }
-    return {"tool_registry": registry}
-
+    registry = build_registry(state["first_message"])
+    return {"registry": registry}
 
 def planner_node(state: GraphState) -> Dict[str, Any]:
     """
-    Calls the LLM to generate a plan.
+    Node to run the planner agent.
     """
-    # The stubbed LLM returns the candidates directly, so we don't need a real prompt.
-    llm_response_str = call_llm(prompt="", vars={})
-    llm_response = json.loads(llm_response_str)
-
-    return {"candidates": llm_response.get("candidates", [])}
-
-
-def hitl_node(state: GraphState) -> Dict[str, Any]:
-    """
-    Placeholder for Human-in-the-Loop review. Sets the final output.
-    """
-    return {
-        "chosen": 0,
-        "note": "stub pipeline — logic to be implemented in Task 2+"
-    }
-
+    planner_output = plan_candidates(state["question"], state["registry"])
+    return {"planner_output": planner_output}
 
 def get_graph():
     """
-    Wires up the graph and compiles it.
+    Builds and returns the LangGraph.
     """
-    workflow = StatefulGraph(GraphState)
+    workflow = StateGraph(GraphState)
 
     # Add nodes
     workflow.add_node("ingest_first_message", ingest_first_message)
-    workflow.add_node("build_registry", build_registry)
-    workflow.add_node("planner_node", planner_node)
-    workflow.add_node("hitl_node", hitl_node)
+    workflow.add_node("build_registry", build_registry_node)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("hitl", hitl_node)
 
     # Define edges
-    workflow.add_edge(START, "ingest_first_message")
+    workflow.set_entry_point("ingest_first_message")
     workflow.add_edge("ingest_first_message", "build_registry")
-    workflow.add_edge("build_registry", "planner_node")
-    workflow.add_edge("planner_node", "hitl_node")
-    workflow.add_edge("hitl_node", END)
+    workflow.add_edge("build_registry", "planner")
+    workflow.add_edge("planner", "hitl")
+
+    # The HITL node is the end of this plan-only graph
+    workflow.add_edge("hitl", END)
 
     # Compile the graph
-    app = workflow.compile()
-
-    # The client should send a JSON with an "initial_message" key.
-    # e.g., curl -X POST -H "Content-Type: application/json" \
-    # -d '{"input": {"initial_message": "hello"}}' \
-    # http://127.0.0.1:8000/planner/invoke
-
-    return app
+    return workflow.compile()

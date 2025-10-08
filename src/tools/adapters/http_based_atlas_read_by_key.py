@@ -1,19 +1,24 @@
-# Static metadata for the HttpBasedAtlasReadByKey tool
-METADATA = {
-    "name": "HttpBasedAtlasReadByKey",
-    "role": "Reads data from an HTTP-based atlas given a key.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "key": {"type": "string", "description": "The key to read from the atlas."}
+from typing import Literal, Dict, Any
+from src.utils.types import ToolSpec
+
+def get_spec() -> ToolSpec:
+    """
+    Returns the specification for the HttpBasedAtlasReadByKey tool.
+    """
+    return {
+        "name": "HttpBasedAtlasReadByKey",
+        "description": "A producer tool that reads data from an HTTP-based Atlas service by key.",
+        "role": "producer",
+        "inputs": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "The key to read from Atlas."}
+            },
+            "required": ["key"]
         },
-        "required": ["key"]
-    },
-    "output_schema": {
-        "type": "object",
-        "properties": {
-            "value": {"type": "string", "description": "The value read from the atlas."}
-        },
-        "required": ["value"]
+        "outputs": {
+            "type": "stream/json",
+            "path": "data.result.*",
+            "keys_field": "keys"
+        }
     }
-}
