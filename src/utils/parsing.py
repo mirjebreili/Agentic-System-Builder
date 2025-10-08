@@ -1,21 +1,26 @@
 import re
-from typing import Tuple, List
+from typing import List, Tuple
+
 
 def parse_first_message(message: str) -> Tuple[str, List[str]]:
     """
     Parses the first user message to separate the question from plugin docs.
-    The function handles both English and Persian text.
+    The function handles both English and Persian text. It looks for a separator
+    between the question and the plugin documentation.
     """
-    # Use a regex to find the question part, which is assumed to be at the beginning of the message.
-    # The plugin docs are assumed to be separated by a line of dashes or similar separator.
-    parts = re.split(r'\n---\n', message, maxsplit=1)
+    # A separator is a line with 3 or more hyphens, asterisks, or equals signs,
+    # a common convention in markdown for a horizontal rule.
+    # We split on the first occurrence of such a separator.
+    parts = re.split(r"\n\s*[-*=_]{3,}\s*\n", message, maxsplit=1)
 
-    question = parts[0].strip()
-
-    if len(parts) > 1:
-        # The rest of the message contains plugin docs, separated by newlines.
-        plugin_docs_raw = parts[1].strip().split('\n')
+    if len(parts) == 2:
+        question, docs_str = parts
+        question = question.strip()
+        plugins_raw = [
+            line.strip() for line in docs_str.strip().split("\n") if line.strip()
+        ]
+        return question, plugins_raw
     else:
-        plugin_docs_raw = []
-
-    return question, plugin_docs_raw
+        # If no separator is found, assume the entire message is the question.
+        # This is a safe fallback.
+        return message.strip(), []

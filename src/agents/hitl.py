@@ -1,36 +1,54 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
+
+from src.utils.types import PlanCandidate
+
+
+def format_candidates(candidates: List[PlanCandidate]) -> str:
+    """Formats the plan candidates for display to the user."""
+    if not candidates:
+        return "No plan candidates were generated."
+
+    output = ["Here are the proposed plans:"]
+    for i, cand in enumerate(candidates):
+        confidence = cand.get("confidence", 0)
+        confidence_str = f"{confidence:.1%}"
+        plan_str = " -> ".join(cand.get("plan", []))
+        rationale = cand.get("rationale", "No rationale provided.")
+        scores = cand.get("scores", {})
+        scores_str = ", ".join(f"{k}: {v:.2f}" for k, v in scores.items())
+
+        output.append(
+            f"\nCandidate #{i} (Confidence: {confidence_str}):\n"
+            f"  - Plan: {plan_str}\n"
+            f"  - Rationale: {rationale}\n"
+            f"  - Scores: [{scores_str}]"
+        )
+    return "\n".join(output)
+
 
 def hitl_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    A node that represents the Human-in-the-Loop (HITL) step.
+    The Human-in-the-Loop (HITL) node.
 
-    This node prints the plan candidates to the console and then
-    acts as a terminal point for the graph execution. The graph
-    will pause here, returning its current state.
+    This node presents the plan candidates to the user and, in a fully
+    interactive setup, would pause for user input. For this plan-only
+    graph, it prints the plans and instructions, then terminates the graph.
     """
-    # Correctly access the candidates from the planner_output key in the state
     planner_output = state.get("planner_output", {})
     candidates = planner_output.get("candidates", [])
 
-    print("\n--- HUMAN-IN-THE-LOOP (HITL) ---")
-    print("The following plan candidates have been generated:")
+    # Format and print the candidates for the user to review.
+    display_message = format_candidates(candidates)
+    print("\n--- HUMAN-IN-THE-LOOP (HITL) ---\n")
+    print(display_message)
+    print("\n------------------------------------")
+    print("Graph execution is paused for user review.")
+    print("To proceed, please respond with one of the following commands:")
+    print("  - APPROVE <index>")
+    print("  - REVISE <instructions>")
+    print("------------------------------------\n")
 
-    if not candidates:
-        print("No plans to display.")
-    else:
-        for i, cand in enumerate(candidates):
-            confidence = cand.get('confidence', 0)
-            # Format confidence as percentage
-            confidence_str = f"{confidence:.2%}" if isinstance(confidence, float) else "N/A"
-
-            print(f"\nCandidate #{i} (Confidence: {confidence_str})")
-            print(f"  - Plan: {cand.get('plan')}")
-            print(f"  - Rationale: {cand.get('rationale')}")
-            print(f"  - Scores: {cand.get('scores')}")
-
-    print("\nGraph execution is paused for user review.")
-    print("To proceed, the user would typically respond with 'APPROVE <index>' or 'REVISE <notes>'.")
-    print("------------------------------------")
-
-    # Pass the state through, making it the final output of the graph.
-    return state
+    # In this version, the graph will end here.
+    # The 'chosen' field from the planner already indicates the top-ranked plan.
+    # A subsequent execution cycle would handle the APPROVE/REVISE logic.
+    return {}

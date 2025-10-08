@@ -6,46 +6,66 @@ def score_plan(plan: List[str], question: str, registry: Registry) -> Dict[str, 
     """
     Scores a plan based on coverage, I/O compatibility, simplicity, and constraints.
     """
-    # Check for I/O compatibility
+    # I/O Compatibility Score
     io_score = 1.0
     for i in range(len(plan) - 1):
-        producer_spec = registry.get(plan[i])
-        consumer_spec = registry.get(plan[i+1])
-        if producer_spec and consumer_spec:
-            if producer_spec['role'] == 'producer' and consumer_spec['role'] not in ['consumer', 'transformer', 'mixed']:
-                io_score = 0.0
-                break
+        producer_name = plan[i]
+        consumer_name = plan[i+1]
 
-    # Coverage score
+        producer_spec = registry.get(producer_name)
+        consumer_spec = registry.get(consumer_name)
+
+        if not producer_spec or not consumer_spec:
+            io_score = 0.0
+            break
+
+        is_producer = producer_spec.get('role') in ['producer', 'mixed']
+        is_consumer = consumer_spec.get('role') in ['consumer', 'transformer', 'mixed']
+
+        if is_producer and not is_consumer:
+            # A producer must be followed by a consumer or transformer
+            io_score = 0.0
+            break
+
+        producer_output_type = producer_spec.get('outputs', {}).get('type')
+        if producer_output_type not in ['stream/json', 'json', 'number'] and is_consumer:
+            # If a consumer follows a non-data-producing tool
+            io_score = 0.0
+            break
+
+    # Coverage Score
     has_producer = any(registry.get(p, {}).get('role') == 'producer' for p in plan)
     has_consumer = any(registry.get(p, {}).get('role') in ['consumer', 'transformer', 'mixed'] for p in plan)
-    needs_aggregation = "مجموع" in question or "sum" in question or "aggregate" in question
 
-    coverage_score = 0.5
-    if has_producer and has_consumer:
-        coverage_score = 0.95
-    elif has_producer and needs_aggregation:
-        # Penalize if aggregation is needed but not provided
-        coverage_score = 0.2
-    elif has_producer:
-        coverage_score = 0.8
-    else:
-        coverage_score = 0.1
+    # Simple check for whether the question implies aggregation
+    needs_aggregation = "sum" in question.lower() or "مجموع" in question
 
-    # Simplicity score is only a virtue for plans with good coverage
-    if coverage_score < 0.8:
-        simplicity_score = 0.2
-    else:
-        simplicity_score = max(0, 1.0 - 0.2 * (len(plan) - 1))
+    coverage_score = 0.0
+    if has_producer and needs_aggregation and has_consumer:
+        coverage_score = 1.0  # Best case: has a producer and a consumer for an aggregation task
+    elif has_producer and not needs_aggregation:
+        coverage_score = 0.9 # Good if it has a producer and no aggregation is needed
+    elif has_producer and needs_aggregation and not has_consumer:
+        coverage_score = 0.4 # Penalize heavily if aggregation is needed but no consumer is present
+    elif not has_producer:
+        coverage_score = 0.1 # Very low score if no data source is identified
 
-    # Constraints score (dummy)
-    constraints_score = 0.95
+    # Simplicity Score
+    # A shorter plan is simpler. We penalize longer plans.
+    # The penalty is harsher if coverage is low.
+    simplicity_score = max(0.0, 1.0 - 0.1 * (len(plan) - 1))
+    if coverage_score < 0.5:
+        simplicity_score *= 0.5 # Further penalize simplicity if coverage is poor
+
+    # Constraints Score (dummy implementation for now)
+    # This could be expanded to check for specific constraints mentioned in the question.
+    constraints_score = 0.9
 
     return {
         "coverage": coverage_score,
         "io": io_score,
         "simplicity": simplicity_score,
-        "constraints": constraints_score
+        "constraints": constraints_score,
     }
 
 def softmax_confidences(raw_scores: List[float]) -> List[float]:
@@ -55,9 +75,7 @@ def softmax_confidences(raw_scores: List[float]) -> List[float]:
     if not raw_scores:
         return []
 
-    # A lower temperature makes the distribution sharper (more confident)
-    temperature = 0.8
-    scores = np.array(raw_scores) / temperature
+    scores = np.array(raw_scores)
     e_scores = np.exp(scores - np.max(scores))  # Subtract max for numerical stability
     softmax = e_scores / e_scores.sum()
 

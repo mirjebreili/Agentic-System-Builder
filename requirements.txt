@@ -2,3 +2,4 @@ langgraph
 pydantic>=2
 httpx
 python-dotenv
+numpy
