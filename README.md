@@ -1,38 +1,50 @@
 # LangGraph Agent Planner
 
-ToT Planner → HITL plan review (planner-only; no execution/scaffold/self-tests/report).
-
-## Scope
-
-This MVP **plans only**: it proposes an ordered plugin sequence and pauses at HITL for approval. It does **not** execute tools or scaffold projects.
+This is a minimal scaffold for a LangGraph agent that can be run with `langgraph dev`.
 
 ## Quick start
 
-```bash
-# Install dependencies
- 1. `pip install -e . "langgraph-cli[inmem]"`
- 2. `cp .env.example .env` (edit MODEL/URL if needed)
- 3. `langgraph dev --check`
- 4. `langgraph dev` (the run pauses at HITL; planner-only)
-```
- ## Scope
- This MVP **plans only**: it proposes an ordered plugin sequence and pauses at **HITL** for approval. It does **not** execute tools, scaffold projects, run self-tests, or generate reports.
+1.  **Create a virtual environment:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate
+    ```
 
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-## First-message format
+3.  **Run the development server:**
+    ```bash
+    langgraph dev
+    ```
 
-Supply the question and plugin documentation in the first user message. For
-example:
+4.  **Send a message to the graph:**
+    In a separate terminal, send a POST request to the running server. The input should be a JSON object with an `input` key, which contains another JSON object with an `initial_message` key.
 
-```
-سؤال: «مجموع مقادیر انتهایی کلیدهایی که با price_ شروع میشن رو بده.»
-پلاگین‌ها:
-- partDeltaPluginHttpBasedAtlasReadByKey ...
-- membasedAtlasKeyStreamAggregator ...
-```
+    ```bash
+    curl -X POST -H "Content-Type: application/json" \
+    -d '{"input": {"initial_message": "hello world"}}' \
+    http://127.0.0.1:8000/planner/invoke
+    ```
 
-The planner reads the docs, constructs the registry, and proposes plans such as:
+    You should receive a response similar to this:
 
-```
-HttpBasedAtlasReadByKey --> membasedAtlasKeyStreamAggregator
-```
+    ```json
+    {
+      "output": {
+        "candidates": [
+          {
+            "plan": [
+              "HttpBasedAtlasReadByKey",
+              "membasedAtlasKeyStreamAggregator"
+            ],
+            "rationale": "placeholder"
+          }
+        ],
+        "chosen": 0,
+        "note": "stub pipeline — logic to be implemented in Task 2+"
+      }
+    }
+    ```
