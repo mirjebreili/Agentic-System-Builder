@@ -1,80 +1,93 @@
-import json
-from langgraph.graph import StatefulGraph, START, END
-from typing import Dict, Any
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from typing import TypedDict, Dict, Any, List, Annotated
+from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, AIMessage
+import operator
 
-from src.utils.types import GraphState
-from src.llm.provider import call_llm
-from src.tools.adapters.http_based_atlas_read_by_key import METADATA as http_tool_metadata
-from src.tools.adapters.membased_atlas_key_stream_aggregator import METADATA as mem_tool_metadata
+from src.tools.registry import build_registry, get_question
+from src.agents.planner import plan_candidates
+from src.agents.hitl import hitl_node
 
-# Node definitions
+class GraphState(TypedDict):
+    initial_request: str
+    question: str
+    registry: Dict[str, Any]
+    candidates: List[Dict[str, Any]]
+    messages: Annotated[List[AnyMessage], operator.add]
+    approved_plan: List[str]
 
-def ingest_first_message(state: GraphState) -> Dict[str, Any]:
-    """
-    The input to the graph is the initial message. LangGraph will place it
-    in the `initial_message` field of the state if the input key matches.
-    This node is a placeholder to start the graph.
-    """
-    return {}
-
-
-def build_registry(state: GraphState) -> Dict[str, Any]:
-    """
-    Builds the tool registry from the available tool metadata.
-    """
-    registry = {
-        http_tool_metadata["name"]: http_tool_metadata,
-        mem_tool_metadata["name"]: mem_tool_metadata,
+def start_new_plan(state: GraphState) -> Dict[str, Any]:
+    initial_request = state["messages"][-1].content
+    question = get_question(initial_request)
+    return {
+        "initial_request": initial_request,
+        "question": question,
+        "approved_plan": [],
+        "candidates": [],
     }
-    return {"tool_registry": registry}
 
+def build_registry_node(state: GraphState) -> Dict[str, Any]:
+    registry = build_registry(state["initial_request"])
+    return {"registry": registry}
 
 def planner_node(state: GraphState) -> Dict[str, Any]:
-    """
-    Calls the LLM to generate a plan.
-    """
-    # The stubbed LLM returns the candidates directly, so we don't need a real prompt.
-    llm_response_str = call_llm(prompt="", vars={})
-    llm_response = json.loads(llm_response_str)
+    planner_output = plan_candidates(state["question"], state["registry"])
+    return {"candidates": planner_output.get("candidates", [])}
 
-    return {"candidates": llm_response.get("candidates", [])}
+def process_hitl_feedback(state: GraphState) -> Dict[str, Any]:
+    last_message_content = state["messages"][-1].content.strip().upper()
 
+    if last_message_content.startswith("APPROVE"):
+        try:
+            index = int(last_message_content.split(" ")[1])
+            approved_plan = state["candidates"][index]["plan"]
+            return {"approved_plan": approved_plan}
+        except (ValueError, IndexError):
+            pass
 
-def hitl_node(state: GraphState) -> Dict[str, Any]:
-    """
-    Placeholder for Human-in-the-Loop review. Sets the final output.
-    """
-    return {
-        "chosen": 0,
-        "note": "stub pipeline — logic to be implemented in Task 2+"
-    }
+    return {}
 
+def should_continue(state: GraphState) -> str:
+    if state.get("approved_plan"):
+        return "end"
+
+    last_message_content = state["messages"][-1].content.strip().upper()
+    if last_message_content.startswith("REVISE"):
+        return "replan"
+
+    return "hitl"
+
+def route_first_message(state: GraphState) -> str:
+    if len(state.get("messages", [])) <= 1:
+        return "new_plan"
+    else:
+        return "process_feedback"
 
 def get_graph():
-    """
-    Wires up the graph and compiles it.
-    """
-    workflow = StatefulGraph(GraphState)
+    workflow = StateGraph(GraphState)
 
-    # Add nodes
-    workflow.add_node("ingest_first_message", ingest_first_message)
-    workflow.add_node("build_registry", build_registry)
-    workflow.add_node("planner_node", planner_node)
-    workflow.add_node("hitl_node", hitl_node)
+    workflow.add_node("start_new_plan", start_new_plan)
+    workflow.add_node("build_registry", build_registry_node)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("hitl", hitl_node)
+    workflow.add_node("process_hitl_feedback", process_hitl_feedback)
 
-    # Define edges
-    workflow.add_edge(START, "ingest_first_message")
-    workflow.add_edge("ingest_first_message", "build_registry")
-    workflow.add_edge("build_registry", "planner_node")
-    workflow.add_edge("planner_node", "hitl_node")
-    workflow.add_edge("hitl_node", END)
+    workflow.set_conditional_entry_point(
+        route_first_message,
+        {"new_plan": "start_new_plan", "process_feedback": "process_hitl_feedback"}
+    )
+    workflow.add_edge("start_new_plan", "build_registry")
+    workflow.add_edge("build_registry", "planner")
+    workflow.add_edge("planner", "hitl")
+    workflow.add_edge("hitl", "process_hitl_feedback")
 
-    # Compile the graph
-    app = workflow.compile()
+    workflow.add_conditional_edges(
+        "process_hitl_feedback",
+        should_continue,
+        {"replan": "planner", "hitl": "hitl", "end": END}
+    )
 
-    # The client should send a JSON with an "initial_message" key.
-    # e.g., curl -X POST -H "Content-Type: application/json" \
-    # -d '{"input": {"initial_message": "hello"}}' \
-    # http://127.0.0.1:8000/planner/invoke
+    # Add a memory saver to enable stateful interactions
+    checkpointer = MemorySaver()
 
-    return app
+    return workflow.compile(checkpointer=checkpointer, interrupt_after=["hitl"])
