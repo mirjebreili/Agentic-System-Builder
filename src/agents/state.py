@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, TypedDict
+from typing import Annotated, Any, Dict, List
 import operator
+from typing_extensions import TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages

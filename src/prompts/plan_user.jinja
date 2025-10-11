@@ -1,27 +1,49 @@
-User Input:
+USER GOAL
 {{ user_goal }}
 
-Task Context:
-{% if "مجموع" in user_goal or "plugin" in user_goal.lower() or "price_" in user_goal %}
-This appears to be a Persian plugin analysis task. The user is asking about data operations that need to be resolved with a sequence of plugins.
-
-Key Indicators:
-- Persian text detected (مجموع, شروع, etc.)
-- Request for data aggregation or key-based operations
-- Plugin-related workflow needed
-
-Focus: Create a detailed plugin analysis plan with Persian language understanding, plugin mapping, and sequence validation.
-{% else %}
-This appears to be a general task that needs step-by-step execution.
-
-Focus: Create a simple plan-execute-finish workflow.
-{% endif %}
-
-Constraints:
+CONSTRAINTS
 {{ constraints | default("Keep it simple and actionable.") }}
 
-Notes:
-- For Persian plugin tasks: Include Persian analysis, plugin mapping, validation, and summary steps
-- For general tasks: Use 2–5 concrete, testable steps
-- Keep prompts clear and specific to the task type
-- Ensure confidence reflects task complexity
+{% if "مجموع" in user_goal or "plugin" in user_goal.lower() or "price_" in user_goal %}
+CONTEXT (plugins)
+- The conversation/attachments include one or more plugin or node descriptions (e.g., .txt, JSON).
+- Extract the exact plugin/node names from those sources.
+- Build the SHORTEST correct linear chain using ONLY those names.
+- Typical pattern: Producer (reads data) → Transformer/Aggregator (filters/maps/reduces) → (optional) Sink/output.
+
+PLANNING RULES
+- Use exact plugin names for both "id" and "tool" when possible.
+- Keep it to 2 steps if sufficient; add a 3rd only if strictly required.
+- Put any minimal parameter hint inside node "prompt" (e.g., "read keys: price_*").
+- Ensure edges form a single path from first to last node.
+
+HINT
+- If the goal mentions keys like "price_*", a reasonable chain (when available) is:
+  HttpBasedAtlasReadByKey → membasedAtlasKeyStreamAggregator
+  (This is ONLY a hint. Use it ONLY if those exact tools exist in the attachments.)
+{% else %}
+GENERAL CONTEXT
+- Use ONLY nodes/tools explicitly present in the conversation/attachments.
+- Propose the simplest linear plan that satisfies the goal.
+
+PLANNING RULES
+- 2–3 nodes total; ≤4 max.
+- Prefer a straight chain with no branching.
+- Use exact tool names for "tool" and set "id" accordingly.
+- Add a brief "prompt" only if it meaningfully disambiguates parameters.
+
+VALIDATION
+- Every edge must reference existing node ids.
+- No unused nodes.
+- No invented tools.
+{% endif %}
+
+OUTPUT
+- Return ONLY a JSON array of alternative plan objects (no extra text, no markdown fences).
+- Each object must follow the schema:
+  {
+    "goal": "<copy of the user goal>",
+    "nodes": [{"id": "...","tool": "...","prompt": "..."}],
+    "edges": [{"from": "...","to": "...","if": null}],
+    "confidence": 0.0
+  }

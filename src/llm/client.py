@@ -3,20 +3,17 @@ from typing import Any, Dict
 
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from config.settings import get_settings
+from config.settings import settings
 
 def get_chat_model(**overrides: Any) -> ChatOpenAI:
-    cfg = get_settings()
     params = {
-        "model": cfg.model,
-        "api_key": cfg.openai_api_key or "dummy",
-        "temperature": cfg.temperature,
+        "base_url": settings.LLM_BASE_URL,
+        "model": settings.LLM_MODEL,
+        "api_key": settings.LLM_API_KEY or "dummy",
+        "temperature": settings.TEMPERATURE,
         "timeout": 60,
         "max_retries": 2,
     }
-
-    if cfg.openai_base_url:
-        params["base_url"] = cfg.openai_base_url
 
     params.update(overrides)
     return ChatOpenAI(**params)

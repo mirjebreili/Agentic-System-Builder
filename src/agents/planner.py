@@ -11,7 +11,6 @@ from utils.message_utils import extract_last_message_content
 
 class PlanNode(BaseModel):
     id: str
-    type: str
     prompt: str | None = None
     tool: str | None = None
 
@@ -93,19 +92,6 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
             valid.append(Plan.model_validate(c).model_dump(by_alias=True))
         except ValidationError:
             continue
-    if not valid:
-        valid = [{
-            "goal": user_goal,
-            "nodes":[
-                {"id":"plan","type":"llm","prompt":"Split the task into 2–5 concrete steps."},
-                {"id":"do","type":"llm","prompt":"Execute the next step. When done, write ONLY DONE."},
-                {"id":"finish","type":"llm","prompt":"Summarize briefly."}],
-            "edges":[
-                {"from":"plan","to":"do"},
-                {"from":"do","to":"do","if":"more_steps"},
-                {"from":"do","to":"finish","if":"steps_done"}],
-            "confidence":0.5
-        }]
 
     # Judge
     scored: list[tuple[float, str, dict]] = []
