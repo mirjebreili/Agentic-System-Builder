@@ -1,7 +1,10 @@
 from __future__ import annotations
 from typing import Any, Dict
+import logging
 
 from utils.message_utils import extract_last_message_content
+
+logger = logging.getLogger(__name__)
 
 def _structural_score(plan: Dict[str, Any]) -> float:
     nodes = plan.get("nodes", []) or []
@@ -49,7 +52,11 @@ def compute_plan_confidence(state: Dict[str, Any]) -> Dict[str, Any]:
     user_text = extract_last_message_content(messages, "") if messages else ""
     metrics = dict(state.get("metrics") or {})
 
-    self_score = float(plan.get("confidence", 0.0) or 0.0)
+    # Log incoming plan
+    incoming_confidence = float(plan.get("confidence", 0.0) or 0.0)
+    logger.info(f"CONFIDENCE NODE INPUT: confidence={incoming_confidence}, nodes={len(plan.get('nodes', []))}, first_node={plan.get('nodes', [{}])[0].get('tool', 'N/A') if plan.get('nodes') else 'N/A'}")
+
+    self_score = incoming_confidence
     structural = _structural_score(plan)
     coverage = _tool_coverage_score(user_text, plan)
     prior = _prior_success_score(metrics)
@@ -63,6 +70,8 @@ def compute_plan_confidence(state: Dict[str, Any]) -> Dict[str, Any]:
 
     confidence = w_self*self_score + w_struct*structural + w_cov*coverage + w_prior*prior
     confidence = float(max(0.0, min(1.0, confidence)))
+
+    logger.info(f"CONFIDENCE NODE OUTPUT: old={incoming_confidence:.3f}, new={confidence:.3f}")
 
     debug = dict(state.get("debug") or {})
     debug["confidence_terms"] = {

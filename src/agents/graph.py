@@ -6,6 +6,7 @@ from agents.state import AppState
 from agents.planner import plan_tot
 from agents.confidence import compute_plan_confidence
 from agents.hitl import review_plan
+from agents.formatter import format_plan_order
 
 from langfuse.langchain import CallbackHandler
 
@@ -21,8 +22,8 @@ def running_on_langgraph_api() -> bool:
 
 
 def route_after_review(state: Dict[str, Any]) -> str:
-    """Route after review: either END if approved or back to plan_tot if replan needed."""
-    return "plan_tot" if state.get("replan") else "END"
+    """Route after review: either format_plan_order if approved or back to plan_tot if replan needed."""
+    return "plan_tot" if state.get("replan") else "format_plan_order"
 
 
 def _make_graph():
@@ -31,6 +32,7 @@ def _make_graph():
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
     g.add_node("review_plan", review_plan)  # HITL interrupt; node re-executes after resume
+    g.add_node("format_plan_order", format_plan_order)  # Format final plan execution order
 
     g.set_entry_point("plan_tot")
     g.add_edge("plan_tot", "confidence")
@@ -38,8 +40,9 @@ def _make_graph():
     g.add_conditional_edges(
         "review_plan",
         route_after_review,
-        {"plan_tot": "plan_tot", "END": END},
+        {"plan_tot": "plan_tot", "format_plan_order": "format_plan_order"},
     )
+    g.add_edge("format_plan_order", END)
     
     # For langgraph dev/API, persistence is handled automatically
     # We just need to specify which nodes should interrupt for HITL

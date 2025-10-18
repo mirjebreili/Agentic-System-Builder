@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict
+import logging
 from langgraph.types import interrupt
+
+logger = logging.getLogger(__name__)
 
 
 def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -16,7 +19,10 @@ def review_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     - ``"approve"`` or ``"revise"`` as shorthand strings
 
     """
-    payload = {"plan": state.get("plan", {})}
+    current_plan = state.get("plan", {})
+    logger.info(f"REVIEW NODE INPUT: confidence={current_plan.get('confidence', 'N/A')}, nodes={len(current_plan.get('nodes', []))}, first_node={current_plan.get('nodes', [{}])[0].get('tool', 'N/A') if current_plan.get('nodes') else 'N/A'}")
+    
+    payload = {"plan": current_plan}
     resume = interrupt(payload)
     if isinstance(resume, str):
         resume = {"action": resume}

@@ -32,6 +32,9 @@ class AppState(TypedDict, total=False):
     error: str
     errors: Annotated[List[str], operator.add]
 
+    # Debug information (including all plan candidates)
+    debug: Annotated[Dict[str, Any], operator.or_]
+
     # Flexible scratchpad for intermediate values
     scratch: Annotated[Dict[str, Any], operator.or_]
 

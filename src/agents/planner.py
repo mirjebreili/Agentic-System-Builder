@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import copy
 from typing import Any, Dict
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
@@ -13,6 +14,7 @@ class PlanNode(BaseModel):
     id: str
     prompt: str | None = None
     tool: str | None = None
+    reasoning: str | None = None
 
 class PlanEdge(BaseModel):
     from_: str = Field(..., alias="from")
@@ -24,6 +26,7 @@ class Plan(BaseModel):
     nodes: list[PlanNode]
     edges: list[PlanEdge]
     confidence: float | None = None
+    reasoning: str | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -89,30 +92,49 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     valid: list[dict] = []
     for c in cand if isinstance(cand, list) else []:
         try:
-            valid.append(Plan.model_validate(c).model_dump(by_alias=True))
-        except ValidationError:
-            continue
+            validated_plan = Plan.model_validate(c).model_dump(by_alias=True)
+            valid.append(validated_plan)
+            logger.info(
+                "Validated plan: confidence=%s, nodes=%s, first_tool=%s",
+                validated_plan.get("confidence", "N/A"),
+                len(validated_plan.get("nodes", [])),
+                validated_plan.get("nodes", [{}])[0].get("tool", "N/A") if validated_plan.get("nodes") else "N/A",
+            )
+        except ValidationError as exc:
+            logger.warning("Plan validation failed: %s", exc)
 
-    # Judge
-    scored: list[tuple[float, str, dict]] = []
-    judge = get_chat_model()
+    if not valid:
+        logger.warning("Planner produced no valid plans; falling back to empty plan.")
+        empty_plan: dict[str, Any] = {"goal": user_goal, "nodes": [], "edges": [], "confidence": 0.0}
+        return {"plan": empty_plan, "messages": state.get("messages", []), "flags": {"more_steps": True, "steps_done": False}}
+
+    # Select the plan with the highest confidence directly
+    best = copy.deepcopy(max(valid, key=lambda p: float(p.get("confidence") or 0.0)))
+    best_confidence = float(best.get("confidence") or 0.0)
+    logger.info(
+        "SELECTED BEST PLAN: confidence=%s, nodes=%s, first_tool=%s",
+        best_confidence,
+        len(best.get("nodes", [])),
+        best.get("nodes", [{}])[0].get("tool", "N/A") if best.get("nodes") else "N/A",
+    )
+
+    # Store all candidate plans for downstream debugging/inspection
+    debug = dict(state.get("debug") or {})
+    debug_candidates = []
     for p in valid:
-        crit = judge.invoke([
-            SystemMessage('Score 0..1 on clarity, coverage, simplicity. Output JSON {"score":x,"reason":""}.'),
-            HumanMessage(json.dumps({"goal": user_goal, "plan": p}, ensure_ascii=False)),
-        ]).content
-        try:
-            j = json.loads(_extract_json(crit))
-            scored.append((float(j.get("score", 0.0)), j.get("reason",""), p))
-        except Exception:
-            scored.append((0.5, "fallback", p))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best = scored[0][2]
-    best["confidence"] = float(min(1.0, max(0.0, best.get("confidence") or scored[0][0])))
+        debug_candidates.append(
+            {
+                "confidence": float(p.get("confidence") or 0.0),
+                "first_tool": p.get("nodes", [{}])[0].get("tool", "N/A") if p.get("nodes") else "N/A",
+                "node_count": len(p.get("nodes", [])),
+                "plan": copy.deepcopy(p),
+            }
+        )
+    debug["plan_candidates"] = debug_candidates
+    state_debug_messages = debug
 
     msgs = list(state.get("messages") or [])
-    msgs.append({"role":"assistant","content":f"Selected ToT plan (score={scored[0][0]:.2f})."})
+    msgs.append({"role": "assistant", "content": f"Selected ToT plan (score={best_confidence:.2f})."})
 
     try:
         from agents.executor import update_node_implementations
@@ -123,4 +145,9 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
 
     logger.debug("Planner debug - selected plan: %s", best)
 
-    return {"plan": best, "messages": msgs, "flags":{"more_steps": True, "steps_done": False}}
+    return {
+        "plan": copy.deepcopy(best),
+        "messages": msgs,
+        "flags": {"more_steps": True, "steps_done": False},
+        "debug": state_debug_messages,
+    }

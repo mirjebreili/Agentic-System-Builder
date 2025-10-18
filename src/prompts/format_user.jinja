@@ -1,0 +1,46 @@
+Please format the following plan information into a simple, clear list.
+
+PLAN DETAILS
+{{ plan_json }}
+
+The plan_json contains:
+- "selected_plan": The main plan that was selected for execution
+- "all_plans": An array of all alternative plans with their confidence scores
+
+INSTRUCTIONS
+Create a simple numbered list showing:
+1. For EACH plan in "all_plans", show ONLY:
+   - Plan number (1, 2, 3, etc.)
+   - The complete list of tool/node names in execution order (numbered modules within the plan)
+   - Reasoning (why this plan/approach was chosen) - if available in the plan
+   - Confidence score at the end
+   - Mark which one is SELECTED
+
+FORMAT RULES:
+- Start each plan with its number (1., 2., 3., etc.)
+- List the modules/tools in order with sub-numbers (1.1, 1.2, 1.3, etc.)
+- IMPORTANT: After each module/tool, show its reasoning on the next line with the same sub-number followed by "Reason:"
+- Show overall plan reasoning starting with "Reasoning: " if available
+- Show confidence like "Confidence: 0.92" after reasoning
+- Add "[SELECTED]" marker for the selected plan
+- NO extra text, NO descriptions, NO headers, NO footers
+- JUST the numbered list
+
+EXAMPLE:
+1. [SELECTED]
+   1.1 tool_name_1
+   1.1 Reason: This tool fetches the required data using pattern matching
+   1.2 tool_name_2
+   1.2 Reason: This tool processes and filters the fetched data
+   Reasoning: This approach uses the most direct path to solve the problem with minimal steps.
+   Confidence: 0.88
+
+2.
+   2.1 tool_name_3
+   2.1 Reason: Single-step solution that handles both fetching and filtering internally
+   Reasoning: Alternative approach that provides more validation but requires extra step.
+   Confidence: 0.85
+
+OUTPUT FORMAT
+Plain text numbered list only. Nothing else.
+
