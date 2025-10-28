@@ -19,7 +19,7 @@ def format_plan_order(state: Dict[str, Any]) -> Dict[str, Any]:
     This node takes the approved plan and uses an LLM to generate a well-formatted
     text summary that describes the order of execution based on the nodes and edges
     defined in the previous steps. It also includes all alternative plans with their
-    confidence scores.
+    confidence scores, sorted from highest to lowest confidence.
     
     Args:
         state: The current application state containing the plan
@@ -40,10 +40,15 @@ def format_plan_order(state: Dict[str, Any]) -> Dict[str, Any]:
     debug_info = state.get("debug", {})
     all_candidates = debug_info.get("plan_candidates", [])
     
+    # Sort candidates by confidence (highest to lowest)
+    sorted_candidates = sorted(all_candidates, key=lambda x: x.get("confidence", 0.0), reverse=True)
+    
+    logger.info(f"Formatting {len(sorted_candidates)} plans sorted by confidence (highest first)")
+    
     # Prepare the data structure for formatting
     format_data = {
         "selected_plan": plan,
-        "all_plans": all_candidates
+        "all_plans": sorted_candidates  # Now sorted by confidence descending
     }
     
     # Prepare the plan as JSON for the prompt
@@ -56,7 +61,7 @@ def format_plan_order(state: Dict[str, Any]) -> Dict[str, Any]:
     system_message = SystemMessage(content=SYSTEM_PROMPT)
     user_message = HumanMessage(content=user_prompt)
     
-    logger.info(f"Invoking LLM to format plan with {len(plan.get('nodes', []))} nodes and {len(all_candidates)} alternative plans")
+    logger.info(f"Invoking LLM to format plan with {len(plan.get('nodes', []))} nodes and {len(sorted_candidates)} alternative plans")
     
     # Invoke the LLM
     try:
@@ -71,7 +76,7 @@ def format_plan_order(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error formatting plan with LLM: {e}", exc_info=True)
         # Fallback to a simple format
-        formatted_text = _fallback_format(plan, all_candidates)
+        formatted_text = _fallback_format(plan, sorted_candidates)
     
     # Add to messages
     messages = list(state.get("messages", []))

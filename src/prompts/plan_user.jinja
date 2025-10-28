@@ -1,49 +1,20 @@
-USER GOAL
+USER GOAL (copy this EXACTLY to your plan's "goal" field)
 {{ user_goal }}
 
-CONSTRAINTS
-{{ constraints | default("Keep it simple and actionable.") }}
+ATOMIC SUBTASKS (you MUST address ALL of these in your plan)
+{{ split_tasks }}
 
-{% if "مجموع" in user_goal or "plugin" in user_goal.lower() or "price_" in user_goal %}
-CONTEXT (plugins)
-- The conversation/attachments include one or more plugin or node descriptions (e.g., .txt, JSON).
-- Extract the exact plugin/node names from those sources.
-- Build the SHORTEST correct linear chain using ONLY those names.
-- Typical pattern: Producer (reads data) → Transformer/Aggregator (filters/maps/reduces) → (optional) Sink/output.
-
-PLANNING RULES
-- Use exact plugin names for both "id" and "tool" when possible.
-- Keep it to 2 steps if sufficient; add a 3rd only if strictly required.
-- Put any minimal parameter hint inside node "prompt" (e.g., "read keys: price_*").
-- Ensure edges form a single path from first to last node.
-
-HINT
-- If the goal mentions keys like "price_*", a reasonable chain (when available) is:
-  HttpBasedAtlasReadByKey → membasedAtlasKeyStreamAggregator
-  (This is ONLY a hint. Use it ONLY if those exact tools exist in the attachments.)
-{% else %}
-GENERAL CONTEXT
-- Use ONLY nodes/tools explicitly present in the conversation/attachments.
-- Propose the simplest linear plan that satisfies the goal.
-
-PLANNING RULES
-- 2–3 nodes total; ≤4 max.
-- Prefer a straight chain with no branching.
-- Use exact tool names for "tool" and set "id" accordingly.
-- Add a brief "prompt" only if it meaningfully disambiguates parameters.
-
-VALIDATION
-- Every edge must reference existing node ids.
-- No unused nodes.
-- No invented tools.
+{% if system_elements and system_elements != "No existing system elements mentioned." %}
+EXISTING SYSTEM ELEMENTS (use these in your node prompts)
+{{ system_elements }}
 {% endif %}
 
-OUTPUT
-- Return ONLY a JSON array of alternative plan objects (no extra text, no markdown fences).
-- Each object must follow the schema:
-  {
-    "goal": "<copy of the user goal>",
-    "nodes": [{"id": "...","tool": "...","prompt": "..."}],
-    "edges": [{"from": "...","to": "...","if": null}],
-    "confidence": 0.0
-  }
+INSTRUCTIONS
+Create {{K|default(3)}} alternative plans that:
+- Have "goal" = the exact USER GOAL above
+- Create 3-6 nodes with meaningful IDs  
+- Each node addresses one or more subtasks (state which ones)
+- Linear flow (node1 → node2 → node3 ...)
+- Confidence 0.75-0.9 if all subtasks covered
+
+Output ONLY a JSON array. No markdown fences. No extra text.

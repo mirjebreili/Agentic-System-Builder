@@ -3,6 +3,7 @@ from typing import Dict, Any
 import os
 from langgraph.graph import StateGraph, START, END
 from agents.state import AppState
+from agents.splitter import split_task
 from agents.planner import plan_tot
 from agents.confidence import compute_plan_confidence
 from agents.hitl import review_plan
@@ -29,12 +30,14 @@ def route_after_review(state: Dict[str, Any]) -> str:
 def _make_graph():
     """Create the LangGraph state graph."""
     g = StateGraph(AppState)
+    g.add_node("split_task", split_task)
     g.add_node("plan_tot", plan_tot)
     g.add_node("confidence", compute_plan_confidence)
     g.add_node("review_plan", review_plan)  # HITL interrupt; node re-executes after resume
     g.add_node("format_plan_order", format_plan_order)  # Format final plan execution order
 
-    g.set_entry_point("plan_tot")
+    g.set_entry_point("split_task")
+    g.add_edge("split_task", "plan_tot")
     g.add_edge("plan_tot", "confidence")
     g.add_edge("confidence", "review_plan")
     g.add_conditional_edges(

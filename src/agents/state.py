@@ -17,6 +17,10 @@ class AppState(TypedDict, total=False):
     input_text: str
     question: str  # Persian question about data operations
     
+    # Task splitting (new)
+    split_tasks: List[Dict[str, Any]]  # List of atomic subtasks from splitter
+    system_elements: List[str]  # Existing components/functions mentioned by user
+    
     # Plugin information
     plugins: Annotated[List[Dict[str, Any]], operator.add]  # Available plugins
     plugin_sequence: str  # Determined sequence like "Plugin1 --> Plugin2"

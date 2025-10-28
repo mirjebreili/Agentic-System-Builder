@@ -5,26 +5,27 @@ PLAN DETAILS
 
 The plan_json contains:
 - "selected_plan": The main plan that was selected for execution
-- "all_plans": An array of all alternative plans with their confidence scores
+- "all_plans": An array of all alternative plans ALREADY SORTED by confidence (highest to lowest)
 
 INSTRUCTIONS
 Create a simple numbered list showing:
-1. For EACH plan in "all_plans", show ONLY:
-   - Plan number (1, 2, 3, etc.)
+1. For EACH plan in "all_plans" (they are already sorted highest confidence first), show ONLY:
+   - Plan number (1, 2, 3, etc.) - maintain the order from all_plans array
    - The complete list of tool/node names in execution order (numbered modules within the plan)
    - Reasoning (why this plan/approach was chosen) - if available in the plan
    - Confidence score at the end
    - Mark which one is SELECTED
 
 FORMAT RULES:
+- List plans in the EXACT ORDER they appear in the "all_plans" array (they're pre-sorted by confidence)
 - Start each plan with its number (1., 2., 3., etc.)
 - List the modules/tools in order with sub-numbers (1.1, 1.2, 1.3, etc.)
 - IMPORTANT: After each module/tool, show its reasoning on the next line with the same sub-number followed by "Reason:"
 - Show overall plan reasoning starting with "Reasoning: " if available
 - Show confidence like "Confidence: 0.92" after reasoning
-- Add "[SELECTED]" marker for the selected plan
+- Add "[SELECTED]" marker next to the plan number for the selected plan
 - NO extra text, NO descriptions, NO headers, NO footers
-- JUST the numbered list
+- JUST the numbered list in descending confidence order
 
 EXAMPLE:
 1. [SELECTED]
@@ -41,6 +42,11 @@ EXAMPLE:
    Reasoning: Alternative approach that provides more validation but requires extra step.
    Confidence: 0.85
 
-OUTPUT FORMAT
-Plain text numbered list only. Nothing else.
+3.
+   3.1 tool_name_4
+   3.1 Reason: Alternative implementation with different trade-offs
+   Reasoning: Third option with lower confidence but simpler implementation.
+   Confidence: 0.78
 
+OUTPUT FORMAT
+Plain text numbered list only. Plans already sorted by confidence descending. Nothing else.

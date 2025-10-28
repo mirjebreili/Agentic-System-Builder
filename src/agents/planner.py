@@ -34,10 +34,24 @@ PROMPTS_DIR = find_prompts_dir()
 SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
-def _render_user_prompt(goal: str, constraints: str | None = None) -> str:
+def _render_user_prompt(goal: str, constraints: str | None = None, split_tasks: list[dict] | None = None, system_elements: list[str] | None = None) -> str:
     txt = USER_TMPL.replace("{{ user_goal }}", goal)
     txt = txt.replace('{{ constraints | default("Keep it simple and actionable.") }}',
                       constraints or "Keep it simple and actionable.")
+    
+    # Add split tasks if provided
+    if split_tasks:
+        tasks_str = "\n".join([f"{t['id']}. {t['description']}" for t in split_tasks])
+        txt = txt.replace("{{ split_tasks }}", tasks_str)
+    else:
+        txt = txt.replace("{{ split_tasks }}", "No subtasks provided.")
+    
+    # Add system elements if provided
+    if system_elements:
+        elements_str = "\n".join([f"- {elem}" for elem in system_elements])
+        txt = txt.replace("{{ system_elements }}", elements_str)
+    else:
+        txt = txt.replace("{{ system_elements }}", "No existing system elements mentioned.")
     
     # Handle the conditional template logic for Persian/plugin detection
     if "مجموع" in goal or "plugin" in goal.lower() or "price_" in goal:
@@ -68,11 +82,30 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     """ToT: generate K=3 plans, judge, pick best; attach confidence."""
     llm = get_chat_model()
     messages = state.get("messages") or []
-    user_goal = extract_last_message_content(messages, "Plan a tiny workflow.")
+    
+    # Get the original user goal (first human message, not the last assistant message)
+    user_goal = ""
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("type") == "human":
+            user_goal = msg.get("content", "")
+            break
+        elif hasattr(msg, "type") and msg.type == "human":
+            user_goal = getattr(msg, "content", "")
+            break
+    
+    if not user_goal:
+        user_goal = extract_last_message_content(messages, "Plan a tiny workflow.")
+    
+    # Get split tasks and system elements from state
+    split_tasks = state.get("split_tasks", [])
+    system_elements = state.get("system_elements", [])
+    
+    logger.info(f"Planning with user_goal='{user_goal[:50]}...', {len(split_tasks)} split tasks, {len(system_elements)} system elements")
+    
     K = 3
 
     sys = SystemMessage(SYSTEM_PROMPT + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
-    user = HumanMessage(_render_user_prompt(user_goal))
+    user = HumanMessage(_render_user_prompt(user_goal, split_tasks=split_tasks, system_elements=system_elements))
     resp = llm.invoke([sys, user]).content
 
     # Parse / repair
