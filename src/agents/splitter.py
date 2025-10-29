@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from typing import Any, Dict, List
+from jinja2 import Template
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, ValidationError
 from agents.prompts_util import find_prompts_dir
@@ -12,7 +13,7 @@ from utils.message_utils import extract_last_message_content
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = find_prompts_dir()
-SYSTEM_PROMPT = (PROMPTS_DIR / "split_system.jinja").read_text(encoding="utf-8")
+SYSTEM_PROMPT_TMPL = Template((PROMPTS_DIR / "split_system.jinja").read_text(encoding="utf-8"))
 USER_TMPL = (PROMPTS_DIR / "split_user.jinja").read_text(encoding="utf-8")
 
 _JSON_BLOCK = re.compile(r"```json\s*(.*?)```", re.S | re.I)
@@ -32,6 +33,13 @@ class SplitTaskResult(BaseModel):
     original_goal: str
     subtasks: List[SubTask]
     system_elements: List[str] = []
+
+def _render_system_prompt(has_system_elements: bool, system_elements: List[str]) -> str:
+    """Render the system prompt with context about available system elements."""
+    return SYSTEM_PROMPT_TMPL.render(
+        has_system_elements=has_system_elements,
+        system_elements=system_elements
+    )
 
 def _render_user_prompt(goal: str) -> str:
     """Render the user prompt with the goal."""
@@ -56,10 +64,16 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
     messages = state.get("messages") or []
     user_goal = extract_last_message_content(messages, "No goal specified.")
     
-    logger.info("Starting task splitting for goal: %s", user_goal)
+    # Get system elements info from state (populated by extract_system_elements node)
+    has_system_elements = state.get("has_system_elements", False)
+    system_elements = state.get("system_elements", [])
     
-    # Create the prompt messages
-    sys = SystemMessage(SYSTEM_PROMPT)
+    logger.info("Starting task splitting for goal: %s (has_system_elements=%s)", 
+                user_goal, has_system_elements)
+    
+    # Create the prompt messages with context
+    system_prompt = _render_system_prompt(has_system_elements, system_elements)
+    sys = SystemMessage(system_prompt)
     user = HumanMessage(_render_user_prompt(user_goal))
     
     # Get the LLM response
@@ -73,6 +87,11 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Validate with Pydantic
         split_result = SplitTaskResult.model_validate(result_data)
+        
+        # CRITICAL: Check if we have at least 1 subtask
+        if not split_result.subtasks or len(split_result.subtasks) == 0:
+            logger.error("Split task returned 0 subtasks! Attempting recovery...")
+            raise ValueError("No subtasks generated")
         
         logger.info(
             "Successfully split task into %d subtasks with %d system elements",
@@ -99,18 +118,33 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
             "messages": msgs,
         }
         
-    except (json.JSONDecodeError, ValidationError) as exc:
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         logger.warning("Failed to parse split task response, attempting repair: %s", exc)
         
         # Try to repair the JSON
         try:
-            fix_sys = SystemMessage("Output ONLY a valid JSON object matching the schema.")
-            fix_user = HumanMessage(f"Original response:\n{resp}\n\nFix this to valid JSON.")
+            fix_sys = SystemMessage(
+                "You MUST output a valid JSON object with at least 1 subtask. "
+                "CRITICAL: The subtasks array cannot be empty! "
+                "Even for simple goals, create at least 2-3 basic subtasks."
+            )
+            fix_user = HumanMessage(
+                f"Original goal: {user_goal}\n\n"
+                f"Previous response was invalid:\n{resp}\n\n"
+                f"Generate a valid JSON with at least 3 subtasks for this goal."
+            )
             fix_resp = llm.invoke([fix_sys, fix_user]).content
             
             json_str = _extract_json(fix_resp)
             result_data = json.loads(json_str)
             split_result = SplitTaskResult.model_validate(result_data)
+            
+            # Check again
+            if not split_result.subtasks or len(split_result.subtasks) == 0:
+                logger.error("Repair also returned 0 subtasks! Using fallback.")
+                raise ValueError("Repair failed to generate subtasks")
+            
+            logger.info("Successfully repaired split task: %d subtasks", len(split_result.subtasks))
             
             subtasks_list = [
                 {"id": st.id, "description": st.description} 
@@ -130,17 +164,27 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
             }
             
         except Exception as repair_exc:
-            logger.error("Failed to repair split task response: %s", repair_exc)
+            logger.error("Repair failed: %s. Using fallback minimal split.", repair_exc)
             
-            # Fall back to a single task
+            # FALLBACK: Create a minimal but valid split
+            fallback_subtasks = [
+                {"id": 1, "description": "Analyze requirements and constraints"},
+                {"id": 2, "description": "Design solution architecture"},
+                {"id": 3, "description": "Implement core functionality"},
+                {"id": 4, "description": "Test and validate solution"},
+                {"id": 5, "description": "Deploy and document"}
+            ]
+            
+            logger.warning("Using fallback subtasks for goal: %s", user_goal)
+            
             msgs = list(state.get("messages") or [])
             msgs.append({
                 "role": "assistant", 
-                "content": "Failed to split task; using original goal as single task."
+                "content": f"Split goal into {len(fallback_subtasks)} generic subtasks (fallback mode)."
             })
             
             return {
-                "split_tasks": [{"id": 1, "description": user_goal}],
+                "split_tasks": fallback_subtasks,
                 "system_elements": [],
                 "messages": msgs,
             }

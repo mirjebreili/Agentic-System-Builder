@@ -4,6 +4,7 @@ import logging
 import re
 import copy
 from typing import Any, Dict
+from jinja2 import Template
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 from agents.prompts_util import find_prompts_dir
@@ -31,45 +32,36 @@ class Plan(BaseModel):
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = find_prompts_dir()
-SYSTEM_PROMPT = (PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8")
+SYSTEM_PROMPT_TMPL = Template((PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8"))
 USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
+def _render_system_prompt(has_system_elements: bool, system_elements: list[str], K: int = 3) -> str:
+    """Render the system prompt with context about available system elements."""
+    return SYSTEM_PROMPT_TMPL.render(
+        has_system_elements=has_system_elements,
+        system_elements=system_elements,
+        K=K
+    )
+
 def _render_user_prompt(goal: str, constraints: str | None = None, split_tasks: list[dict] | None = None, system_elements: list[str] | None = None) -> str:
+    """Render user prompt with goal, tasks, and system elements."""
     txt = USER_TMPL.replace("{{ user_goal }}", goal)
     txt = txt.replace('{{ constraints | default("Keep it simple and actionable.") }}',
                       constraints or "Keep it simple and actionable.")
     
-    # Add split tasks if provided
+    # Add split tasks
     if split_tasks:
         tasks_str = "\n".join([f"{t['id']}. {t['description']}" for t in split_tasks])
         txt = txt.replace("{{ split_tasks }}", tasks_str)
     else:
         txt = txt.replace("{{ split_tasks }}", "No subtasks provided.")
     
-    # Add system elements if provided
+    # Add system elements
     if system_elements:
         elements_str = "\n".join([f"- {elem}" for elem in system_elements])
         txt = txt.replace("{{ system_elements }}", elements_str)
     else:
         txt = txt.replace("{{ system_elements }}", "No existing system elements mentioned.")
-    
-    # Handle the conditional template logic for Persian/plugin detection
-    if "مجموع" in goal or "plugin" in goal.lower() or "price_" in goal:
-        # Persian plugin task detected
-        txt = txt.replace("{% if \"مجموع\" in user_goal or \"plugin\" in user_goal.lower() or \"price_\" in user_goal %}", "")
-        txt = txt.replace("{% else %}", "<!-- ELSE_BLOCK -->")
-        txt = txt.replace("{% endif %}", "")
-        # Keep the plugin analysis section, remove the general section
-        if "<!-- ELSE_BLOCK -->" in txt:
-            txt = txt.split("<!-- ELSE_BLOCK -->")[0]
-    else:
-        # General task
-        txt = txt.replace("{% if \"مجموع\" in user_goal or \"plugin\" in user_goal.lower() or \"price_\" in user_goal %}", "<!-- IF_BLOCK -->")
-        txt = txt.replace("{% else %}", "")
-        txt = txt.replace("{% endif %}", "")
-        # Keep the general section, remove the plugin section
-        if "<!-- IF_BLOCK -->" in txt:
-            txt = txt.split("<!-- IF_BLOCK -->")[1] if "{% else %}" in USER_TMPL else txt
     
     return txt
 
@@ -99,12 +91,16 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     # Get split tasks and system elements from state
     split_tasks = state.get("split_tasks", [])
     system_elements = state.get("system_elements", [])
+    has_system_elements = state.get("has_system_elements", False)
     
-    logger.info(f"Planning with user_goal='{user_goal[:50]}...', {len(split_tasks)} split tasks, {len(system_elements)} system elements")
+    logger.info(f"Planning with user_goal='{user_goal[:50]}...', {len(split_tasks)} split tasks, "
+                f"{len(system_elements)} system elements, has_system_elements={has_system_elements}")
     
     K = 3
 
-    sys = SystemMessage(SYSTEM_PROMPT + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
+    # Render system prompt with context
+    system_prompt = _render_system_prompt(has_system_elements, system_elements, K)
+    sys = SystemMessage(system_prompt + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
     user = HumanMessage(_render_user_prompt(user_goal, split_tasks=split_tasks, system_elements=system_elements))
     resp = llm.invoke([sys, user]).content
 
@@ -169,18 +165,10 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     msgs = list(state.get("messages") or [])
     msgs.append({"role": "assistant", "content": f"Selected ToT plan (score={best_confidence:.2f})."})
 
-    try:
-        from agents.executor import update_node_implementations
-
-        update_node_implementations(best)
-    except Exception:
-        logger.debug("Unable to update node implementations for plan.", exc_info=True)
-
     logger.debug("Planner debug - selected plan: %s", best)
 
     return {
         "plan": copy.deepcopy(best),
         "messages": msgs,
-        "flags": {"more_steps": True, "steps_done": False},
         "debug": state_debug_messages,
     }

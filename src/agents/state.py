@@ -9,21 +9,21 @@ from langgraph.graph import add_messages
 
 
 class AppState(TypedDict, total=False):
-    # Conversation/history
+    """Application state for the agentic system builder."""
+    
+    # Conversation history
     messages: Annotated[List[AnyMessage], add_messages]
 
     # Core inputs
     goal: str
-    input_text: str
-    question: str  # Persian question about data operations
     
-    # Task splitting (new)
-    split_tasks: List[Dict[str, Any]]  # List of atomic subtasks from splitter
+    # Task splitting
+    split_tasks: List[Dict[str, Any]]  # Atomic subtasks from splitter
     system_elements: List[str]  # Existing components/functions mentioned by user
+    has_system_elements: bool  # Whether concrete system components were provided
     
     # Plugin information
     plugins: Annotated[List[Dict[str, Any]], operator.add]  # Available plugins
-    plugin_sequence: str  # Determined sequence like "Plugin1 --> Plugin2"
     
     # Planning
     plan: Annotated[Dict[str, Any], operator.or_]
@@ -32,14 +32,7 @@ class AppState(TypedDict, total=False):
     review: Annotated[Dict[str, Any], operator.or_]
     replan: bool
 
-    # Diagnostics
-    error: str
-    errors: Annotated[List[str], operator.add]
-
-    # Debug information (including all plan candidates)
+    # Debug information (all plan candidates)
     debug: Annotated[Dict[str, Any], operator.or_]
-
-    # Flexible scratchpad for intermediate values
-    scratch: Annotated[Dict[str, Any], operator.or_]
 
 

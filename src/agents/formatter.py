@@ -85,14 +85,7 @@ def format_plan_order(state: Dict[str, Any]) -> Dict[str, Any]:
         "content": f"Plan execution order:\n\n{formatted_text}"
     })
     
-    # Store formatted text in scratch for easy access
-    scratch = dict(state.get("scratch") or {})
-    scratch["formatted_plan_order"] = formatted_text
-    
-    return {
-        "messages": messages,
-        "scratch": scratch
-    }
+    return {"messages": messages}
 
 
 def _fallback_format(plan: Dict[str, Any], all_candidates: list = None) -> str:
