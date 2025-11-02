@@ -1,15 +1,24 @@
 from __future__ import annotations
 import json
-import logging
 import re
 import copy
 from typing import Any, Dict
-from jinja2 import Template
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
-from agents.prompts_util import find_prompts_dir
-from llm.client import get_chat_model
-from utils.message_utils import extract_last_message_content
+
+# New infrastructure imports
+from src.utils.prompt_manager import get_prompt_manager
+from src.utils.retry import invoke_llm_with_retry
+from src.utils.logger import get_logger, log_node_execution, PerformanceLogger
+from src.utils.metrics import get_metrics_collector
+from src.config.app_settings import settings
+from src.llm.client import get_chat_model
+from src.utils.message_utils import extract_last_message_content
+
+# Get structured logger, metrics, and prompt manager
+_logger = get_logger(__name__)
+metrics = get_metrics_collector()
+pm = get_prompt_manager()
 
 class PlanNode(BaseModel):
     id: str
@@ -29,15 +38,11 @@ class Plan(BaseModel):
     confidence: float | None = None
     reasoning: str | None = None
 
-logger = logging.getLogger(__name__)
-
-PROMPTS_DIR = find_prompts_dir()
-SYSTEM_PROMPT_TMPL = Template((PROMPTS_DIR / "plan_system.jinja").read_text(encoding="utf-8"))
-USER_TMPL = (PROMPTS_DIR / "plan_user.jinja").read_text(encoding="utf-8")
 
 def _render_system_prompt(has_system_elements: bool, system_elements: list[str], K: int = 3) -> str:
     """Render the system prompt with context about available system elements."""
-    return SYSTEM_PROMPT_TMPL.render(
+    return pm.render(
+        "plan_system",
         has_system_elements=has_system_elements,
         system_elements=system_elements,
         K=K
@@ -45,31 +50,21 @@ def _render_system_prompt(has_system_elements: bool, system_elements: list[str],
 
 def _render_user_prompt(goal: str, constraints: str | None = None, split_tasks: list[dict] | None = None, system_elements: list[str] | None = None) -> str:
     """Render user prompt with goal, tasks, and system elements."""
-    txt = USER_TMPL.replace("{{ user_goal }}", goal)
-    txt = txt.replace('{{ constraints | default("Keep it simple and actionable.") }}',
-                      constraints or "Keep it simple and actionable.")
-    
-    # Add split tasks
-    if split_tasks:
-        tasks_str = "\n".join([f"{t['id']}. {t['description']}" for t in split_tasks])
-        txt = txt.replace("{{ split_tasks }}", tasks_str)
-    else:
-        txt = txt.replace("{{ split_tasks }}", "No subtasks provided.")
-    
-    # Add system elements
-    if system_elements:
-        elements_str = "\n".join([f"- {elem}" for elem in system_elements])
-        txt = txt.replace("{{ system_elements }}", elements_str)
-    else:
-        txt = txt.replace("{{ system_elements }}", "No existing system elements mentioned.")
-    
-    return txt
+    return pm.render(
+        "plan_user",
+        user_goal=goal,
+        constraints=constraints or "Keep it simple and actionable.",
+        split_tasks=split_tasks or [],
+        system_elements=system_elements or []
+    )
 
 _JSON_BLOCK = re.compile(r"```json\s*(.*?)```", re.S | re.I)
 def _extract_json(text: str) -> str:
     m = _JSON_BLOCK.search(text or "")
     return m.group(1) if m else (text or "")
 
+
+@log_node_execution("plan_tot")
 def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     """ToT: generate K=3 plans, judge, pick best; attach confidence."""
     llm = get_chat_model()
@@ -93,8 +88,12 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     system_elements = state.get("system_elements", [])
     has_system_elements = state.get("has_system_elements", False)
     
-    logger.info(f"Planning with user_goal='{user_goal[:50]}...', {len(split_tasks)} split tasks, "
-                f"{len(system_elements)} system elements, has_system_elements={has_system_elements}")
+    _logger.info("Planning with ToT", extra={
+        "user_goal_preview": user_goal[:50] + "..." if len(user_goal) > 50 else user_goal,
+        "split_tasks_count": len(split_tasks),
+        "system_elements_count": len(system_elements),
+        "has_system_elements": has_system_elements
+    })
     
     K = 3
 
@@ -102,18 +101,29 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     system_prompt = _render_system_prompt(has_system_elements, system_elements, K)
     sys = SystemMessage(system_prompt + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
     user = HumanMessage(_render_user_prompt(user_goal, split_tasks=split_tasks, system_elements=system_elements))
-    resp = llm.invoke([sys, user]).content
+    
+    with PerformanceLogger(_logger, "plan_tot_llm_call"):
+        ai_message = invoke_llm_with_retry(llm, [sys, user])
+        resp = ai_message.content
+    
 
     # Parse / repair
     try:
         cand = json.loads(_extract_json(resp))
     except Exception:
-        fix = llm.invoke([SystemMessage("Output ONLY a JSON array of plan objects."), HumanMessage(resp)]).content
-        logger.debug("Planner fix raw output: %s", fix)
+        _logger.warning("Initial plan parsing failed, attempting repair")
+        fix_sys = SystemMessage("Output ONLY a JSON array of plan objects.")
+        fix_user = HumanMessage(resp)
+        
+        with PerformanceLogger(_logger, "plan_tot_repair_llm_call"):
+            fix_message = invoke_llm_with_retry(llm, [fix_sys, fix_user])
+            fix = fix_message.content
+        
+        _logger.debug("Planner repair output received", extra={"output_length": len(fix)})
         try:
             cand = json.loads(_extract_json(fix))
         except json.JSONDecodeError:
-            logger.warning("Planner fix output is not valid JSON. Falling back to default plan.", exc_info=True)
+            _logger.warning("Planner repair output is not valid JSON, falling back to default plan", exc_info=True)
             cand = []
     if isinstance(cand, dict) and "alternatives" in cand:
         cand = cand["alternatives"]
@@ -123,28 +133,32 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
         try:
             validated_plan = Plan.model_validate(c).model_dump(by_alias=True)
             valid.append(validated_plan)
-            logger.info(
-                "Validated plan: confidence=%s, nodes=%s, first_tool=%s",
-                validated_plan.get("confidence", "N/A"),
-                len(validated_plan.get("nodes", [])),
-                validated_plan.get("nodes", [{}])[0].get("tool", "N/A") if validated_plan.get("nodes") else "N/A",
+            _logger.info(
+                "Validated plan",
+                extra={
+                    "confidence": validated_plan.get("confidence", "N/A"),
+                    "nodes_count": len(validated_plan.get("nodes", [])),
+                    "first_tool": validated_plan.get("nodes", [{}])[0].get("tool", "N/A") if validated_plan.get("nodes") else "N/A"
+                }
             )
         except ValidationError as exc:
-            logger.warning("Plan validation failed: %s", exc)
+            _logger.warning("Plan validation failed", extra={"error": str(exc)})
 
     if not valid:
-        logger.warning("Planner produced no valid plans; falling back to empty plan.")
+        _logger.warning("Planner produced no valid plans, falling back to empty plan")
         empty_plan: dict[str, Any] = {"goal": user_goal, "nodes": [], "edges": [], "confidence": 0.0}
         return {"plan": empty_plan, "messages": state.get("messages", []), "flags": {"more_steps": True, "steps_done": False}}
 
     # Select the plan with the highest confidence directly
     best = copy.deepcopy(max(valid, key=lambda p: float(p.get("confidence") or 0.0)))
     best_confidence = float(best.get("confidence") or 0.0)
-    logger.info(
-        "SELECTED BEST PLAN: confidence=%s, nodes=%s, first_tool=%s",
-        best_confidence,
-        len(best.get("nodes", [])),
-        best.get("nodes", [{}])[0].get("tool", "N/A") if best.get("nodes") else "N/A",
+    _logger.info(
+        "SELECTED BEST PLAN",
+        extra={
+            "confidence": best_confidence,
+            "nodes_count": len(best.get("nodes", [])),
+            "first_tool": best.get("nodes", [{}])[0].get("tool", "N/A") if best.get("nodes") else "N/A"
+        }
     )
 
     # Store all candidate plans for downstream debugging/inspection
@@ -165,7 +179,7 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     msgs = list(state.get("messages") or [])
     msgs.append({"role": "assistant", "content": f"Selected ToT plan (score={best_confidence:.2f})."})
 
-    logger.debug("Planner debug - selected plan: %s", best)
+    _logger.debug("Planner debug - selected plan: %s", best)
 
     return {
         "plan": copy.deepcopy(best),

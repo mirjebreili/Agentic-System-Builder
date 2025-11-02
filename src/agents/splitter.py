@@ -1,20 +1,23 @@
 from __future__ import annotations
 import json
-import logging
 import re
 from typing import Any, Dict, List
-from jinja2 import Template
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, ValidationError
-from agents.prompts_util import find_prompts_dir
-from llm.client import get_chat_model
-from utils.message_utils import extract_last_message_content
 
-logger = logging.getLogger(__name__)
+# New infrastructure imports
+from src.utils.prompt_manager import get_prompt_manager
+from src.utils.retry import invoke_llm_with_retry
+from src.utils.logger import get_logger, log_node_execution, PerformanceLogger
+from src.utils.metrics import get_metrics_collector
+from src.config.app_settings import settings
+from src.llm.client import get_chat_model
+from src.utils.message_utils import extract_last_message_content
 
-PROMPTS_DIR = find_prompts_dir()
-SYSTEM_PROMPT_TMPL = Template((PROMPTS_DIR / "split_system.jinja").read_text(encoding="utf-8"))
-USER_TMPL = (PROMPTS_DIR / "split_user.jinja").read_text(encoding="utf-8")
+# Get structured logger, metrics, and prompt manager
+_logger = get_logger(__name__)
+metrics = get_metrics_collector()
+pm = get_prompt_manager()
 
 _JSON_BLOCK = re.compile(r"```json\s*(.*?)```", re.S | re.I)
 
@@ -34,18 +37,26 @@ class SplitTaskResult(BaseModel):
     subtasks: List[SubTask]
     system_elements: List[str] = []
 
-def _render_system_prompt(has_system_elements: bool, system_elements: List[str]) -> str:
-    """Render the system prompt with context about available system elements."""
-    return SYSTEM_PROMPT_TMPL.render(
+def _build_system_prompt(
+    has_system_elements: bool,
+    system_elements: List[Dict[str, Any]]
+) -> SystemMessage:
+    """Render split_system.jinja with system elements context."""
+    system_text = pm.render(
+        "split_system",
         has_system_elements=has_system_elements,
         system_elements=system_elements
     )
+    return SystemMessage(content=system_text)
 
-def _render_user_prompt(goal: str) -> str:
-    """Render the user prompt with the goal."""
-    txt = USER_TMPL.replace("{{ user_goal }}", goal)
-    return txt
 
+def _build_user_msg(goal: str) -> HumanMessage:
+    """Render split_user.jinja with the user's goal."""
+    user_text = pm.render("split_user", user_goal=goal)
+    return HumanMessage(content=user_text)
+
+
+@log_node_execution("split_task")
 def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Split the user's goal into atomic subtasks that cannot be further decomposed.
@@ -68,17 +79,19 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
     has_system_elements = state.get("has_system_elements", False)
     system_elements = state.get("system_elements", [])
     
-    logger.info("Starting task splitting for goal: %s (has_system_elements=%s)", 
-                user_goal, has_system_elements)
+    _logger.info("Starting task splitting", 
+                extra={"user_goal": user_goal, "has_system_elements": has_system_elements})
     
     # Create the prompt messages with context
-    system_prompt = _render_system_prompt(has_system_elements, system_elements)
-    sys = SystemMessage(system_prompt)
-    user = HumanMessage(_render_user_prompt(user_goal))
+    sys = _build_system_prompt(has_system_elements, system_elements)
+    user = _build_user_msg(user_goal)
     
-    # Get the LLM response
-    resp = llm.invoke([sys, user]).content
-    logger.debug("Split task raw response: %s", resp)
+    # Get the LLM response with retry logic
+    with PerformanceLogger(_logger, "split_task_llm_call"):
+        ai_message = invoke_llm_with_retry(llm, [sys, user])
+        resp = ai_message.content
+    
+    _logger.debug("Split task raw response received", extra={"response_length": len(resp)})
     
     # Parse the JSON response
     try:
@@ -90,13 +103,15 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # CRITICAL: Check if we have at least 1 subtask
         if not split_result.subtasks or len(split_result.subtasks) == 0:
-            logger.error("Split task returned 0 subtasks! Attempting recovery...")
+            _logger.error("Split task returned 0 subtasks, attempting recovery")
             raise ValueError("No subtasks generated")
         
-        logger.info(
-            "Successfully split task into %d subtasks with %d system elements",
-            len(split_result.subtasks),
-            len(split_result.system_elements)
+        _logger.info(
+            "Successfully split task",
+            extra={
+                "subtasks_count": len(split_result.subtasks),
+                "system_elements_count": len(split_result.system_elements)
+            }
         )
         
         # Convert to dict for state
@@ -119,7 +134,8 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        logger.warning("Failed to parse split task response, attempting repair: %s", exc)
+        _logger.warning("Failed to parse split task response, attempting repair", 
+                      extra={"error": str(exc), "error_type": type(exc).__name__})
         
         # Try to repair the JSON
         try:
@@ -133,7 +149,10 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
                 f"Previous response was invalid:\n{resp}\n\n"
                 f"Generate a valid JSON with at least 3 subtasks for this goal."
             )
-            fix_resp = llm.invoke([fix_sys, fix_user]).content
+            
+            with PerformanceLogger(_logger, "split_task_repair_llm_call"):
+                fix_message = invoke_llm_with_retry(llm, [fix_sys, fix_user])
+                fix_resp = fix_message.content
             
             json_str = _extract_json(fix_resp)
             result_data = json.loads(json_str)
@@ -141,10 +160,11 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
             
             # Check again
             if not split_result.subtasks or len(split_result.subtasks) == 0:
-                logger.error("Repair also returned 0 subtasks! Using fallback.")
+                _logger.error("Repair also returned 0 subtasks, using fallback")
                 raise ValueError("Repair failed to generate subtasks")
             
-            logger.info("Successfully repaired split task: %d subtasks", len(split_result.subtasks))
+            _logger.info("Successfully repaired split task", 
+                       extra={"subtasks_count": len(split_result.subtasks)})
             
             subtasks_list = [
                 {"id": st.id, "description": st.description} 
@@ -164,7 +184,8 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
             }
             
         except Exception as repair_exc:
-            logger.error("Repair failed: %s. Using fallback minimal split.", repair_exc)
+            _logger.error("Repair failed, using fallback minimal split", 
+                        extra={"error": str(repair_exc), "error_type": type(repair_exc).__name__})
             
             # FALLBACK: Create a minimal but valid split
             fallback_subtasks = [
@@ -175,7 +196,7 @@ def split_task(state: Dict[str, Any]) -> Dict[str, Any]:
                 {"id": 5, "description": "Deploy and document"}
             ]
             
-            logger.warning("Using fallback subtasks for goal: %s", user_goal)
+            _logger.warning("Using fallback subtasks", extra={"user_goal": user_goal})
             
             msgs = list(state.get("messages") or [])
             msgs.append({
