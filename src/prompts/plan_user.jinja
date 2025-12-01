@@ -1,20 +1,28 @@
 USER GOAL (copy this EXACTLY to your plan's "goal" field)
 {{ user_goal }}
 
-ATOMIC SUBTASKS (you MUST address ALL of these in your plan)
+{% if split_tasks and split_tasks|length > 0 %}
+SUBTASKS (consider these in your plan, but feel free to decompose differently)
 {{ split_tasks }}
+{% endif %}
 
-{% if system_elements and system_elements != "No existing system elements mentioned." %}
-EXISTING SYSTEM ELEMENTS (use these in your node prompts)
+{% if system_elements and system_elements|length > 0 %}
+EXISTING SYSTEM ELEMENTS (use these in your node prompts where appropriate)
 {{ system_elements }}
 {% endif %}
 
 INSTRUCTIONS
-Create {{K|default(3)}} alternative plans that:
+Create {{ K|default(3) }} alternative plans that:
 - Have "goal" = the exact USER GOAL above
-- Create 3-6 nodes with meaningful IDs  
-- Each node addresses one or more subtasks (state which ones)
-- Linear flow (node1 → node2 → node3 ...)
-- Confidence 0.75-0.9 if all subtasks covered
+- Create 3-6 nodes with meaningful IDs and clear prompts
+- Each node should have a specific purpose
+- Prefer linear flow but can use conditional edges if needed
+{% if system_elements and system_elements|length > 0 %}
+- Reference available system elements where appropriate
+{% else %}
+- Design abstract components as needed
+{% endif %}
+- Self-assess confidence: 0.75-0.9 for well-structured plans
 
 Output ONLY a JSON array. No markdown fences. No extra text.
+

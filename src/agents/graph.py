@@ -1,24 +1,20 @@
 from __future__ import annotations
 from typing import Dict, Any, Callable
 from langgraph.graph import StateGraph, END
-from agents.state import AppState
-from agents.plugin_analyzer import extract_system_elements
-from agents.splitter import split_task
-from agents.planner import plan_tot
-from agents.confidence import compute_plan_confidence
-from agents.hitl import review_plan
-from agents.formatter import format_plan_order
+from src.agents.state import AppState
 
-# New nodes
-from agents.goal_extractor import extract_goal
-from agents.dependency_resolver import resolve_dependencies
-from agents.plan_validator import validate_plan
+# Plan B Refactored Nodes (6 total)
+from src.agents.context_extractor import extract_context
+from src.agents.planner import plan_tot
+from src.agents.plan_validator import validate_plan
+from src.agents.hitl import review_plan
+from src.agents.format_output import format_output
 
 # State validation
-from agents.state_validator import StateValidator
+from src.agents.state_validator import StateValidator
 
 from langfuse.langchain import CallbackHandler
-from utils.logger import get_logger
+from src.utils.logger import get_logger
 
 lf_handler = CallbackHandler()
 
@@ -71,75 +67,75 @@ def validate_state_wrapper(node_func: Callable, node_name: str) -> Callable:
 
 
 def route_after_review(state: Dict[str, Any]) -> str:
-    """Route after review: either format_plan_order if approved or back to plan_tot if replan needed."""
-    return "plan_tot" if state.get("replan") else "format_plan_order"
+    """Route after review: either format_output if approved or back to plan_tot if replan needed."""
+    return "plan_tot" if state.get("replan") else "format_output"
 
 
 def route_after_validation(state: Dict[str, Any]) -> str:
-    """Route after plan validation: to confidence if valid, back to planner if needs replan."""
+    """Route after plan validation: to review_plan if valid, back to planner if needs replan."""
     validation = state.get("plan_validation", {})
     if validation.get("needs_replan", False):
         return "plan_tot"
-    return "confidence"
+    return "review_plan"
 
 
 def _make_graph():
-    """Create the LangGraph state graph with integrated validation and new capabilities."""
+    """
+    Create the LangGraph state graph - Plan B Refactored (6 nodes).
+    
+    Workflow:
+        extract_context → plan_tot → validate_plan → review_plan → format_output → END
+                                           ↓ (if validation fails)
+                                       plan_tot
+                                           
+        review_plan → plan_tot (if user requests revision)
+        
+    Removed nodes:
+        - extract_goal (merged into extract_context)
+        - recognize_plugin_pattern (merged into extract_context)
+        - extract_system_elements (merged into extract_context)
+        - split_task (no longer needed, planner has full creative freedom)
+        - resolve_dependencies (not needed for planning phase)
+        - confidence (merged into format_output)
+        - format_plan_order (renamed to format_output with confidence)
+    """
     g = StateGraph(AppState)
     
-    # Add existing nodes with validation
-    g.add_node("extract_system_elements", validate_state_wrapper(extract_system_elements, "extract_system_elements"))
-    g.add_node("split_task", validate_state_wrapper(split_task, "split_task"))
+    # Add Plan B nodes with validation wrappers
+    g.add_node("extract_context", validate_state_wrapper(extract_context, "extract_context"))
     g.add_node("plan_tot", validate_state_wrapper(plan_tot, "plan_tot"))
-    g.add_node("confidence", validate_state_wrapper(compute_plan_confidence, "confidence"))
-    g.add_node("review_plan", validate_state_wrapper(review_plan, "review_plan"))
-    g.add_node("format_plan_order", validate_state_wrapper(format_plan_order, "format_plan_order"))
-    
-    # Add new nodes with validation for enhanced workflow
-    g.add_node("extract_goal", validate_state_wrapper(extract_goal, "extract_goal"))
-    g.add_node("resolve_dependencies", validate_state_wrapper(resolve_dependencies, "resolve_dependencies"))
     g.add_node("validate_plan", validate_state_wrapper(validate_plan, "validate_plan"))
+    g.add_node("review_plan", validate_state_wrapper(review_plan, "review_plan"))
+    g.add_node("format_output", validate_state_wrapper(format_output, "format_output"))
 
-    # Define enhanced workflow edges
-    g.set_entry_point("extract_goal")
+    # Define workflow edges
+    g.set_entry_point("extract_context")
     
-    # Goal extraction → System elements extraction
-    g.add_edge("extract_goal", "extract_system_elements")
-    
-    # System elements → Dependency resolution (if has system elements)
-    g.add_edge("extract_system_elements", "resolve_dependencies")
-    
-    # Dependencies → Task splitting
-    g.add_edge("resolve_dependencies", "split_task")
-    
-    # Task splitting → Main planning
-    g.add_edge("split_task", "plan_tot")
+    # Context extraction → Planning
+    g.add_edge("extract_context", "plan_tot")
     
     # Planning → Validation
     g.add_edge("plan_tot", "validate_plan")
     
-    # Validation → Confidence (if valid) or back to planning (if needs replan)
+    # Validation → Review (if valid) or back to Planning (if needs replan)
     g.add_conditional_edges(
         "validate_plan",
         route_after_validation,
-        {"plan_tot": "plan_tot", "confidence": "confidence"},
+        {"plan_tot": "plan_tot", "review_plan": "review_plan"},
     )
     
-    # Confidence → Review
-    g.add_edge("confidence", "review_plan")
-    
-    # Review → Format (if approved) or back to planning (if replan)
+    # Review → Format (if approved) or back to Planning (if revision requested)
     g.add_conditional_edges(
         "review_plan",
         route_after_review,
-        {"plan_tot": "plan_tot", "format_plan_order": "format_plan_order"},
+        {"plan_tot": "plan_tot", "format_output": "format_output"},
     )
     
     # Format → End
-    g.add_edge("format_plan_order", END)
+    g.add_edge("format_output", END)
     
     # Compile with interrupt for HITL review
-    return g.compile(interrupt_before=["review_plan"])
+    return g.compile()
 
 
 graph = _make_graph().with_config({"callbacks": [lf_handler]})

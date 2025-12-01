@@ -15,14 +15,17 @@ logger = get_logger(__name__)
 @log_node_execution("validate_plan")
 def validate_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate plan completeness and correctness.
+    Validate plan completeness and correctness - SIMPLIFIED for Plan B.
     
-    This node checks:
-    1. All subtasks from split_task are addressed
+    This node checks ONLY critical issues:
+    1. Plan is not empty
     2. No circular dependencies in edges
-    3. All referenced tools/plugins exist
-    4. Confidence thresholds are met
-    5. Plan structure is valid
+    3. All referenced tools/plugins exist (if applicable)
+    4. Basic structural integrity
+    
+    REMOVED (Plan B refactoring):
+    - Subtask coverage checks (no more split_task dependency)
+    - Confidence threshold checks (moved to format_output)
     
     Args:
         state: Application state with plan
@@ -31,97 +34,77 @@ def validate_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         Updated state with validation results and potential replan trigger
     """
     plan = state.get("plan", {})
-    split_tasks = state.get("split_tasks", [])
     plugins = state.get("plugins", [])
+    has_system_elements = state.get("has_system_elements", False)
     
     if not plan:
         logger.error("No plan to validate")
         return {
-            "replan": True,
-            "review": {
-                "action": "revise",
-                "feedback": "No plan generated"
-            }
+            "plan_validation": {
+                "valid": False,
+                "errors": ["No plan generated"],
+                "needs_replan": True
+            },
+            "replan": True
         }
     
     validation_errors = []
+    warnings = []
     
-    # 1. Validate plan structure
-    structure_errors = StateValidator.validate_plan(state)
-    if structure_errors:
-        validation_errors.extend(structure_errors)
-    
-    # 2. Check if all subtasks are addressed
-    if split_tasks:
-        task_errors = _validate_task_coverage(plan, split_tasks)
-        validation_errors.extend(task_errors)
-    
-    # 3. Check for circular dependencies in plan edges
-    cycle_errors = _check_plan_cycles(plan)
-    validation_errors.extend(cycle_errors)
-    
-    # 4. Validate plugin/tool references
-    if plugins:
-        plugin_errors = _validate_plugin_references(plan, plugins)
-        validation_errors.extend(plugin_errors)
-    
-    # 5. Check confidence threshold
-    confidence = plan.get("confidence", 0.0)
-    if confidence < 0.5:
-        validation_errors.append(f"Low confidence score: {confidence:.2f} (minimum 0.5 recommended)")
-    
-    # 6. Check for empty or trivial plans
+    # 1. Validate basic plan structure
     nodes = plan.get("nodes", [])
     if len(nodes) == 0:
         validation_errors.append("Plan has no nodes")
-    elif len(nodes) == 1 and not nodes[0].get("prompt"):
-        validation_errors.append("Plan has only one node with no prompt")
+    elif len(nodes) == 1 and not nodes[0].get("prompt") and not nodes[0].get("tool"):
+        validation_errors.append("Plan has only one node with no prompt or tool")
     
-    # Determine if replan is needed
-    if validation_errors:
-        logger.warning("plan_validation_failed", error_count=len(validation_errors))
-        
-        feedback = "Plan validation failed:\n" + "\n".join(f"  • {err}" for err in validation_errors)
-        
-        # Only trigger replan for critical errors
-        critical_errors = [
-            "circular dependency",
-            "no nodes",
-            "missing plugin",
-            "task not addressed"
-        ]
-        
-        has_critical_error = any(
-            any(ce in err.lower() for ce in critical_errors)
-            for err in validation_errors
-        )
-        
-        return {
-            "replan": has_critical_error,
-            "plan_validation": {
-                "valid": False,
-                "errors": validation_errors,
-                "warnings": [e for e in validation_errors if not has_critical_error]
-            },
-            "review": {
-                "action": "revise" if has_critical_error else "review",
-                "feedback": feedback
-            }
-        }
+    # 2. Check for circular dependencies in plan edges
+    cycle_errors = _check_plan_cycles(plan)
+    validation_errors.extend(cycle_errors)
     
-    logger.info("plan_validation_passed", node_count=len(nodes), confidence=confidence)
+    # 3. Validate plugin/tool references (only if system elements were provided)
+    if has_system_elements and plugins:
+        plugin_errors = _validate_plugin_references(plan, plugins)
+        # Downgrade missing plugin errors to warnings in abstract mode
+        if plugin_errors:
+            warnings.extend(plugin_errors)
+    
+    # 4. Check for obviously broken plans
+    if plan.get("goal", "").strip() == "":
+        warnings.append("Plan has empty goal field")
+    
+    # Determine if replan is needed (only for CRITICAL errors)
+    critical_errors = [
+        err for err in validation_errors 
+        if any(keyword in err.lower() for keyword in ["no nodes", "circular", "cycle"])
+    ]
+    
+    needs_replan = len(critical_errors) > 0
+    
+    if validation_errors or warnings:
+        logger.warning("plan_validation_issues", 
+                      error_count=len(validation_errors),
+                      warning_count=len(warnings))
+    else:
+        logger.info("plan_validation_passed", node_count=len(nodes))
+    
+    validation_result = {
+        "valid": len(critical_errors) == 0,
+        "errors": validation_errors,
+        "warnings": warnings,
+        "needs_replan": needs_replan
+    }
     
     return {
-        "plan_validation": {
-            "valid": True,
-            "errors": [],
-            "warnings": []
-        }
+        "plan_validation": validation_result,
+        "replan": needs_replan
     }
 
 
 def _validate_task_coverage(plan: Dict[str, Any], split_tasks: List[Dict[str, Any]]) -> List[str]:
     """
+    DEPRECATED - Kept for compatibility but no longer used in Plan B.
+    
     Check if all subtasks are addressed in the plan.
     
     Args:
@@ -155,7 +138,8 @@ def _validate_task_coverage(plan: Dict[str, Any], split_tasks: List[Dict[str, An
     unaddressed = all_task_ids - addressed_tasks
     
     if unaddressed:
-        errors.append(f"Tasks not addressed in plan: {', '.join(unaddressed)}")
+        unaddressed_str = [str(item) for item in unaddressed]
+        errors.append(f"Tasks not addressed in plan: {', '.join(unaddressed_str)}")
     
     return errors
 
@@ -203,7 +187,8 @@ def _check_plan_cycles(plan: Dict[str, Any]) -> List[str]:
                 # Found cycle
                 cycle_start = path.index(neighbor)
                 cycle = path[cycle_start:] + [neighbor]
-                errors.append(f"Circular dependency in plan: {' -> '.join(cycle)}")
+                cycle_str = [str(item) for item in cycle]
+                errors.append(f"Circular dependency in plan: {' -> '.join(cycle_str)}")
                 return True
         
         path.pop()

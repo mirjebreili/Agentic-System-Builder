@@ -4,5 +4,5 @@
   "env": "./.env",
   "pip_installer": "pip",
   "pip_config_file": "./pip.conf",
-  "python_version": "3.11"
+  "python_version": "3.12"
 }

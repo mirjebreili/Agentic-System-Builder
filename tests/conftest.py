@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 # Try importing the app graph
 try:
-    from agents.graph import graph as app_graph
+    from src.agents.graph import graph as app_graph
 except ImportError:
     app_graph = None
 

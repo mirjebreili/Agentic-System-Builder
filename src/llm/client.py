@@ -3,7 +3,7 @@ from typing import Any, Dict
 
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from config.settings import settings
+from src.config.settings import settings
 
 def get_chat_model(**overrides: Any) -> ChatOpenAI:
     params = {

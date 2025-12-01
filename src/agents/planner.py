@@ -66,31 +66,24 @@ def _extract_json(text: str) -> str:
 
 @log_node_execution("plan_tot")
 def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
-    """ToT: generate K=3 plans, judge, pick best; attach confidence."""
+    """ToT: generate K=3 plans, judge, pick best; attach confidence.
+    
+    Plan B Refactoring: Now works directly with goal and system_elements from extract_context,
+    no longer depends on split_task subtasks.
+    """
     llm = get_chat_model()
-    messages = state.get("messages") or []
     
-    # Get the original user goal (first human message, not the last assistant message)
-    user_goal = ""
-    for msg in messages:
-        if isinstance(msg, dict) and msg.get("type") == "human":
-            user_goal = msg.get("content", "")
-            break
-        elif hasattr(msg, "type") and msg.type == "human":
-            user_goal = getattr(msg, "content", "")
-            break
-    
-    if not user_goal:
-        user_goal = extract_last_message_content(messages, "Plan a tiny workflow.")
-    
-    # Get split tasks and system elements from state
-    split_tasks = state.get("split_tasks", [])
+    # Get goal and system elements directly from state (set by extract_context)
+    user_goal = state.get("goal", "")
     system_elements = state.get("system_elements", [])
     has_system_elements = state.get("has_system_elements", False)
     
+    if not user_goal:
+        _logger.warning("No goal found in state, using fallback")
+        user_goal = "Plan a tiny workflow."
+    
     _logger.info("Planning with ToT", extra={
         "user_goal_preview": user_goal[:50] + "..." if len(user_goal) > 50 else user_goal,
-        "split_tasks_count": len(split_tasks),
         "system_elements_count": len(system_elements),
         "has_system_elements": has_system_elements
     })
@@ -100,7 +93,8 @@ def plan_tot(state: Dict[str, Any]) -> Dict[str, Any]:
     # Render system prompt with context
     system_prompt = _render_system_prompt(has_system_elements, system_elements, K)
     sys = SystemMessage(system_prompt + f"\nReturn {K} ALTERNATIVE JSON plans as a JSON array.")
-    user = HumanMessage(_render_user_prompt(user_goal, split_tasks=split_tasks, system_elements=system_elements))
+    # Note: split_tasks removed - planner now has full creative freedom to decompose
+    user = HumanMessage(_render_user_prompt(user_goal, split_tasks=None, system_elements=system_elements))
     
     with PerformanceLogger(_logger, "plan_tot_llm_call"):
         ai_message = invoke_llm_with_retry(llm, [sys, user])

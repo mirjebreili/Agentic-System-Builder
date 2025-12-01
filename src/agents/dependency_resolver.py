@@ -50,10 +50,11 @@ def resolve_dependencies(state: Dict[str, Any]) -> Dict[str, Any]:
     if cycle:
         logger.error("circular_dependency_detected", cycle=cycle)
         from langchain_core.messages import AIMessage
+        cycle_str = [str(item) for item in cycle]
         return {
-            "messages": [AIMessage(content=f"❌ Circular dependency detected: {' -> '.join(cycle)}")],
+            "messages": [AIMessage(content=f"❌ Circular dependency detected: {' -> '.join(cycle_str)}")],
             "has_system_elements": False,
-            "dependency_errors": [f"Circular dependency: {' -> '.join(cycle)}"]
+            "dependency_errors": [f"Circular dependency: {' -> '.join(cycle_str)}"]
         }
     
     # Topologically sort plugins
